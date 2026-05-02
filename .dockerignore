@@ -1,0 +1,14 @@
+.git
+.env
+.venv
+node_modules
+**/node_modules
+**/.next
+**/.dart_tool
+**/build
+workspaces
+logs
+secrets
+templates/flutter_mobile_app/.idea
+templates/flutter_mobile_app/*.iml
+templates/flutter_mobile_app/android/local.properties

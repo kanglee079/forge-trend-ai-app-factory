@@ -1,0 +1,19 @@
+{
+  "name": "forge-trend-ai-app-factory",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Trend-to-app factory MVP with dashboard, FastAPI orchestrator, local worker daemon, and Flutter output.",
+  "packageManager": "pnpm@10.28.0",
+  "scripts": {
+    "dev": "pnpm --parallel dev:api dev:dashboard dev:worker",
+    "dev:dashboard": "pnpm --filter @forge/dashboard dev",
+    "dev:api": "node scripts/venv-run.mjs services/api -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload",
+    "dev:worker": "node scripts/venv-run.mjs workers/daemon -m daemon.main",
+    "desktop": "pnpm --filter @forge/desktop start",
+    "setup:python": "node scripts/setup-python.mjs",
+    "build": "pnpm --filter @forge/dashboard build && pnpm --filter @forge/shared build",
+    "lint": "pnpm --filter @forge/dashboard lint",
+    "db:migrate": "node scripts/venv-run.mjs services/api -m alembic upgrade head",
+    "doctor": "node scripts/venv-run.mjs . scripts/doctor.py"
+  }
+}

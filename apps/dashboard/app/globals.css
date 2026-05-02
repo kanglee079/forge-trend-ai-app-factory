@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 180 17% 97%;
+  --foreground: 205 22% 13%;
+  --card: 0 0% 100%;
+  --card-foreground: 205 22% 13%;
+  --primary: 181 80% 30%;
+  --primary-foreground: 0 0% 100%;
+  --accent: 3 86% 65%;
+  --accent-foreground: 205 22% 13%;
+  --muted: 190 18% 91%;
+  --muted-foreground: 199 9% 38%;
+  --border: 190 15% 82%;
+  --destructive: 0 76% 50%;
+}
+
+[data-theme="dark"] {
+  --background: 206 24% 10%;
+  --foreground: 180 21% 93%;
+  --card: 205 23% 13%;
+  --card-foreground: 180 21% 93%;
+  --primary: 181 74% 42%;
+  --primary-foreground: 205 22% 10%;
+  --accent: 3 78% 66%;
+  --accent-foreground: 205 22% 10%;
+  --muted: 205 18% 20%;
+  --muted-foreground: 190 13% 70%;
+  --border: 204 15% 28%;
+  --destructive: 0 76% 58%;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  color: hsl(var(--foreground));
+  background: hsl(var(--background));
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
