@@ -19,6 +19,26 @@ export type ApiKey = {
   last_used_at: string | null;
 };
 
+export type ActionResponse = {
+  status: string;
+  detail: string;
+};
+
+export type DoctorCheck = {
+  id: string;
+  label: string;
+  status: string;
+  detail: string;
+  required: boolean;
+  guidance: string | null;
+};
+
+export type DoctorResponse = {
+  status: string;
+  generated_at: string;
+  checks: DoctorCheck[];
+};
+
 export type Worker = {
   id: string;
   machine_name: string;
@@ -152,16 +172,33 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   health: () => request<{ status: string; service: string }>("/health"),
+  doctor: () => request<DoctorResponse>("/doctor"),
   apiKeys: () => request<ApiKey[]>("/api-keys"),
   createApiKey: (body: unknown) => request<ApiKey>("/api-keys", { method: "POST", body: JSON.stringify(body) }),
+  updateApiKey: (id: string, body: unknown) => request<ApiKey>(`/api-keys/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteApiKey: (id: string) => request<ActionResponse>(`/api-keys/${id}`, { method: "DELETE" }),
+  testApiKey: (id: string) => request<{ status: string; provider: string; detail: string }>(`/api-keys/${id}/test`, { method: "POST" }),
   workers: () => request<Worker[]>("/workers"),
   ideas: () => request<Idea[]>("/ideas"),
   createIdea: (body: unknown) => request<Idea>("/ideas", { method: "POST", body: JSON.stringify(body) }),
   projects: () => request<Project[]>("/projects"),
   project: (id: string) => request<Project>(`/projects/${id}`),
   createProject: (body: unknown) => request<Project>("/projects", { method: "POST", body: JSON.stringify(body) }),
+  deleteProject: (id: string) => request<ActionResponse>(`/projects/${id}`, { method: "DELETE" }),
   runPipeline: (id: string) => request<{ project_id: string; status: string; queue: string }>(`/projects/${id}/run-pipeline`, { method: "POST" }),
+  retryPipeline: (id: string) => request<{ project_id: string; status: string; queue: string }>(`/projects/${id}/retry`, { method: "POST" }),
+  stopPipeline: (id: string) => request<ActionResponse>(`/projects/${id}/stop`, { method: "POST" }),
+  allEvents: (params?: { project_id?: string; level?: string; search?: string; limit?: number }) => {
+    const search = new URLSearchParams();
+    if (params?.project_id) search.set("project_id", params.project_id);
+    if (params?.level) search.set("level", params.level);
+    if (params?.search) search.set("search", params.search);
+    if (params?.limit) search.set("limit", String(params.limit));
+    const query = search.toString();
+    return request<AgentEvent[]>(`/events${query ? `?${query}` : ""}`);
+  },
   events: (id: string) => request<AgentEvent[]>(`/projects/${id}/events`),
+  clearEvents: (id: string) => request<ActionResponse>(`/projects/${id}/events`, { method: "DELETE" }),
   qa: (id: string) => request<QAResult[]>(`/projects/${id}/qa`),
   policy: (id: string) => request<PolicyResult[]>(`/projects/${id}/policy`),
   artifacts: (id: string) => request<Artifact[]>(`/projects/${id}/artifacts`)

@@ -41,16 +41,16 @@ export function Button({
   );
 }
 
-export function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
-  return <input className="h-10 w-full rounded-md border border-border bg-card px-3 text-sm outline-none focus:ring-2 focus:ring-primary/30" {...props} />;
+export function Input({ className, ...props }: React.InputHTMLAttributes<HTMLInputElement>) {
+  return <input className={cn("h-10 w-full rounded-md border border-border bg-card px-3 text-sm outline-none focus:ring-2 focus:ring-primary/30", className)} {...props} />;
 }
 
-export function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return <textarea className="min-h-28 w-full rounded-md border border-border bg-card px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30" {...props} />;
+export function Textarea({ className, ...props }: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  return <textarea className={cn("min-h-28 w-full rounded-md border border-border bg-card px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30", className)} {...props} />;
 }
 
-export function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
-  return <select className="h-10 w-full rounded-md border border-border bg-card px-3 text-sm outline-none focus:ring-2 focus:ring-primary/30" {...props} />;
+export function Select({ className, ...props }: React.SelectHTMLAttributes<HTMLSelectElement>) {
+  return <select className={cn("h-10 w-full rounded-md border border-border bg-card px-3 text-sm outline-none focus:ring-2 focus:ring-primary/30", className)} {...props} />;
 }
 
 export function Label({ children }: { children: React.ReactNode }) {

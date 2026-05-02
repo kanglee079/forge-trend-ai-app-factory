@@ -1,15 +1,19 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Loader2, Play, RefreshCw } from "lucide-react";
+import { Loader2, Play, RefreshCw, RotateCcw, Square } from "lucide-react";
 import { AgentEvent, ApiError, api, Artifact, PolicyResult, Project, QAResult, Worker } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
 import { Badge, Button, Card, Notice, StatusBadge, Table, Td, Th } from "@/components/ui";
+import { useFeedback } from "@/components/feedback";
+import { CopyButton, LogViewer } from "@/components/log-viewer";
+import { derivePipelineSteps, getCurrentStep, getLatestFailure, getPipelineProgress, PipelineStepper } from "@/components/pipeline";
 
 const tabs = ["Overview", "PRD", "Agent Timeline", "Logs", "QA", "Policy", "Artifacts", "Settings"] as const;
 type Tab = (typeof tabs)[number];
 
 export function ProjectDetailClient({ initialProject }: { initialProject: Project }) {
+  const feedback = useFeedback();
   const [project, setProject] = useState(initialProject);
   const [active, setActive] = useState<Tab>("Overview");
   const [events, setEvents] = useState<AgentEvent[]>([]);
@@ -19,6 +23,8 @@ export function ProjectDetailClient({ initialProject }: { initialProject: Projec
   const [workers, setWorkers] = useState<Worker[]>([]);
   const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [notice, setNotice] = useState<{ tone: "success" | "danger" | "warning"; message: string } | null>(null);
 
   async function load() {
@@ -60,11 +66,20 @@ export function ProjectDetailClient({ initialProject }: { initialProject: Projec
       setNotice({ tone: "warning", message: "No online local worker with Codex and Flutter is available. Start pnpm dev:worker, then run the pipeline again." });
       return;
     }
+    if (project.workspace_path) {
+      const confirmed = await feedback.confirm({
+        title: "Run pipeline again?",
+        description: "This can modify files in the existing generated workspace. Existing project events and artifacts stay visible.",
+        confirmLabel: "Run pipeline",
+      });
+      if (!confirmed) return;
+    }
     setRunning(true);
     setNotice(null);
     try {
       const response = await api.runPipeline(project.id);
       setProject((current) => ({ ...current, status: response.status }));
+      feedback.notify({ tone: "success", message: `Pipeline queued on ${response.queue}.` });
       setNotice({ tone: "success", message: `Pipeline queued on ${response.queue}. This page refreshes every 5 seconds while the worker reports events.` });
       await load();
     } catch (error) {
@@ -74,8 +89,76 @@ export function ProjectDetailClient({ initialProject }: { initialProject: Projec
     }
   }
 
+  async function retry() {
+    if (running) return;
+    const confirmed = await feedback.confirm({
+      title: "Retry project pipeline?",
+      description: "The project will be queued again using the current workspace and latest state.",
+      confirmLabel: "Retry",
+    });
+    if (!confirmed) return;
+    setRunning(true);
+    try {
+      const response = await api.retryPipeline(project.id);
+      setProject((current) => ({ ...current, status: response.status }));
+      feedback.notify({ tone: "success", message: `Retry queued on ${response.queue}.` });
+      await load();
+    } catch (error) {
+      feedback.notify({ tone: "danger", message: error instanceof ApiError ? error.detail : "Could not queue retry." });
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  async function stop() {
+    if (stopping) return;
+    const confirmed = await feedback.confirm({
+      title: "Request stop?",
+      description: "The current worker pass may finish before cancellation is observed. The dashboard will mark the project as stop requested.",
+      confirmLabel: "Request stop",
+      tone: "danger",
+    });
+    if (!confirmed) return;
+    setStopping(true);
+    try {
+      await api.stopPipeline(project.id);
+      setProject((current) => ({ ...current, status: "stop_requested" }));
+      feedback.notify({ tone: "warning", message: "Stop requested for this project." });
+      await load();
+    } catch (error) {
+      feedback.notify({ tone: "danger", message: error instanceof ApiError ? error.detail : "Could not request stop." });
+    } finally {
+      setStopping(false);
+    }
+  }
+
+  async function clearLogs() {
+    if (clearing) return;
+    const confirmed = await feedback.confirm({
+      title: "Clear project logs?",
+      description: "This removes stored agent events for this project. QA, policy, and artifacts remain.",
+      confirmLabel: "Clear logs",
+      tone: "danger",
+    });
+    if (!confirmed) return;
+    setClearing(true);
+    try {
+      const response = await api.clearEvents(project.id);
+      setEvents([]);
+      feedback.notify({ tone: "success", message: response.detail });
+    } catch (error) {
+      feedback.notify({ tone: "danger", message: error instanceof ApiError ? error.detail : "Could not clear logs." });
+    } finally {
+      setClearing(false);
+    }
+  }
+
   const prd = artifacts.find((item) => item.name === "prd.md");
   const hasReadyWorker = workers.some((worker) => worker.status === "online" && worker.has_codex && worker.has_flutter);
+  const steps = derivePipelineSteps({ project, events, qa, policy, artifacts });
+  const latestFailure = getLatestFailure(events, qa);
+  const currentStep = getCurrentStep(steps);
+  const progress = getPipelineProgress(steps);
 
   return (
     <>
@@ -84,8 +167,9 @@ export function ProjectDetailClient({ initialProject }: { initialProject: Projec
           <div className="mb-2"><StatusBadge status={project.status} /></div>
           <h1 className="text-2xl font-semibold">{project.name}</h1>
           <p className="text-sm text-muted-foreground">{project.slug} · {project.workspace_path ?? "workspace pending"}</p>
+          <p className="mt-1 text-sm text-muted-foreground">{progress}% complete · current step: {currentStep?.label ?? "waiting"}</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button variant="secondary" onClick={() => load()} disabled={loading}>
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw size={16} />}
             {loading ? "Refreshing..." : "Refresh"}
@@ -93,6 +177,14 @@ export function ProjectDetailClient({ initialProject }: { initialProject: Projec
           <Button onClick={() => run()} disabled={running}>
             {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play size={16} />}
             {running ? "Queueing..." : "Run pipeline"}
+          </Button>
+          <Button variant="secondary" onClick={() => retry()} disabled={running}>
+            {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw size={16} />}
+            Retry
+          </Button>
+          <Button variant="danger" onClick={() => stop()} disabled={stopping}>
+            {stopping ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square size={16} />}
+            Stop
           </Button>
         </div>
       </div>
@@ -111,10 +203,10 @@ export function ProjectDetailClient({ initialProject }: { initialProject: Projec
           </button>
         ))}
       </div>
-      {active === "Overview" ? <Overview project={project} events={events} qa={qa} policy={policy} artifacts={artifacts} /> : null}
+      {active === "Overview" ? <Overview project={project} events={events} qa={qa} policy={policy} artifacts={artifacts} steps={steps} latestFailure={latestFailure} /> : null}
       {active === "PRD" ? <PrdPanel prdPath={prd?.path} /> : null}
       {active === "Agent Timeline" ? <Timeline events={events} /> : null}
-      {active === "Logs" ? <Logs events={events} /> : null}
+      {active === "Logs" ? <LogViewer events={events} onClear={clearLogs} /> : null}
       {active === "QA" ? <QaPanel qa={qa} /> : null}
       {active === "Policy" ? <PolicyPanel policy={policy} /> : null}
       {active === "Artifacts" ? <ArtifactsPanel artifacts={artifacts} /> : null}
@@ -123,18 +215,41 @@ export function ProjectDetailClient({ initialProject }: { initialProject: Projec
   );
 }
 
-function Overview({ project, events, qa, policy, artifacts }: { project: Project; events: AgentEvent[]; qa: QAResult[]; policy: PolicyResult[]; artifacts: Artifact[] }) {
+function Overview({
+  project,
+  events,
+  qa,
+  policy,
+  artifacts,
+  steps,
+  latestFailure,
+}: {
+  project: Project;
+  events: AgentEvent[];
+  qa: QAResult[];
+  policy: PolicyResult[];
+  artifacts: Artifact[];
+  steps: ReturnType<typeof derivePipelineSteps>;
+  latestFailure: ReturnType<typeof getLatestFailure>;
+}) {
   const latestPolicy = policy[0];
   return (
-    <div className="grid gap-4 md:grid-cols-4">
-      <Card><div className="text-sm text-muted-foreground">Status</div><div className="mt-2"><StatusBadge status={project.status} /></div></Card>
-      <Card><div className="text-sm text-muted-foreground">Events</div><div className="mt-2 text-2xl font-semibold">{events.length}</div></Card>
-      <Card><div className="text-sm text-muted-foreground">QA Commands</div><div className="mt-2 text-2xl font-semibold">{qa.length}</div></Card>
-      <Card><div className="text-sm text-muted-foreground">Policy</div><div className="mt-2">{latestPolicy ? <Badge tone={latestPolicy.passed ? "success" : "danger"}>{latestPolicy.risk}</Badge> : "Pending"}</div></Card>
-      <Card className="md:col-span-4">
-        <h2 className="mb-3 text-base font-semibold">Artifacts</h2>
-        <div className="flex flex-wrap gap-2">{artifacts.map((item) => <Badge key={item.id}>{item.name}</Badge>)}</div>
-      </Card>
+    <div className="space-y-4">
+      <PipelineStepper
+        steps={steps}
+        latestFailure={latestFailure}
+        onCopyFailure={latestFailure?.detail ? () => navigator.clipboard.writeText(latestFailure.detail) : undefined}
+      />
+      <div className="grid gap-4 md:grid-cols-4">
+        <Card><div className="text-sm text-muted-foreground">Status</div><div className="mt-2"><StatusBadge status={project.status} /></div></Card>
+        <Card><div className="text-sm text-muted-foreground">Events</div><div className="mt-2 text-2xl font-semibold">{events.length}</div></Card>
+        <Card><div className="text-sm text-muted-foreground">QA Commands</div><div className="mt-2 text-2xl font-semibold">{qa.length}</div></Card>
+        <Card><div className="text-sm text-muted-foreground">Policy</div><div className="mt-2">{latestPolicy ? <Badge tone={latestPolicy.passed ? "success" : "danger"}>{latestPolicy.risk}</Badge> : "Pending"}</div></Card>
+        <Card className="md:col-span-4">
+          <h2 className="mb-3 text-base font-semibold">Artifacts</h2>
+          <div className="flex flex-wrap gap-2">{artifacts.length ? artifacts.map((item) => <Badge key={item.id}>{item.name}</Badge>) : <span className="text-sm text-muted-foreground">No artifacts yet.</span>}</div>
+        </Card>
+      </div>
     </div>
   );
 }
@@ -159,26 +274,15 @@ function Timeline({ events }: { events: AgentEvent[] }) {
   );
 }
 
-function Logs({ events }: { events: AgentEvent[] }) {
-  return (
-    <div className="space-y-4">
-      {events.filter((event) => event.stdout || event.stderr).map((event) => (
-        <Card key={event.id}>
-          <div className="mb-2 flex items-center gap-2"><Badge>{event.step}</Badge><span className="text-xs text-muted-foreground">{formatDate(event.created_at)}</span></div>
-          {event.stdout ? <pre className="max-h-80 overflow-auto rounded-md bg-slate-950 p-3 text-xs text-slate-100">{event.stdout}</pre> : null}
-          {event.stderr ? <pre className="mt-2 max-h-80 overflow-auto rounded-md bg-red-950 p-3 text-xs text-red-100">{event.stderr}</pre> : null}
-        </Card>
-      ))}
-    </div>
-  );
-}
-
 function QaPanel({ qa }: { qa: QAResult[] }) {
   return (
-    <Table>
-      <thead><tr><Th>Command</Th><Th>Status</Th><Th>Exit</Th><Th>Created</Th></tr></thead>
-      <tbody>{qa.map((item) => <tr key={item.id}><Td>{item.command}</Td><Td><StatusBadge status={item.status} /></Td><Td>{item.exit_code}</Td><Td>{formatDate(item.created_at)}</Td></tr>)}</tbody>
-    </Table>
+    <div className="space-y-4">
+      <Table>
+        <thead><tr><Th>Command</Th><Th>Status</Th><Th>Exit</Th><Th>Created</Th><Th>Log</Th></tr></thead>
+        <tbody>{qa.map((item) => <tr key={item.id}><Td>{item.command}</Td><Td><StatusBadge status={item.status} /></Td><Td>{item.exit_code}</Td><Td>{formatDate(item.created_at)}</Td><Td><CopyButton value={[item.command, item.stdout, item.stderr].filter(Boolean).join("\n\n")} /></Td></tr>)}</tbody>
+      </Table>
+      {!qa.length ? <Card className="text-sm text-muted-foreground">No QA results yet.</Card> : null}
+    </div>
   );
 }
 

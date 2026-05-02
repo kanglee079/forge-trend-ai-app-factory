@@ -6,13 +6,14 @@ Status legend: Todo, In Progress, Done.
 | --- | --- | --- | --- | --- | --- |
 | App shell | Sidebar-only layout lacks top system status, active navigation, first-run guidance, and theme control. | High | Add app shell with top bar, live API/worker indicators, active nav, and theme toggle. | `apps/dashboard/app/layout.tsx`, `apps/dashboard/components/AppShell.tsx` | Done |
 | Design system | UI primitives are thin; no shared toast, confirm dialog, skeleton, progress, or robust empty/error state. | High | Expand reusable components and feedback provider. | `apps/dashboard/components/ui.tsx`, `apps/dashboard/components/feedback.tsx` | Done |
-| Overview | Dashboard shows counts but not readiness, recent failures, onboarding, running jobs, or progress. | High | Add readiness checklist, system health, recent jobs/errors, and progress cards. | `apps/dashboard/app/page.tsx` | Todo |
-| API Keys | Create flow has partial feedback but no validation details, no confirm for disabling/removing, and weak empty state. | High | Add validation, toast, confirm disable, copy-safe masked state, and empty CTA. | `apps/dashboard/app/api-keys/page.tsx` | Todo |
+| Overview | Dashboard shows counts but not readiness, recent failures, onboarding, running jobs, or progress. | High | Add readiness checklist, system health, recent jobs/errors, and progress cards. | `apps/dashboard/app/page.tsx` | Done |
+| API Keys | Create flow has partial feedback but no validation details, no confirm for disabling/removing, and weak empty state. | High | Add validation, toast, confirm disable, copy-safe masked state, and empty CTA. | `apps/dashboard/app/api-keys/page.tsx` | Done |
 | Workers | Worker list needs live refresh, readiness state, and actionable offline guidance. | High | Convert to client page with auto-refresh, empty/error states, and ready-worker notice. | `apps/dashboard/app/workers/page.tsx` | Done |
 | Ideas | Create flow needs validation, toast, loading, and guided empty state. | Medium | Add client validation, loading, toast/notice, and empty CTA. | `apps/dashboard/app/ideas/page.tsx` | In Progress |
-| Projects | Run action can overwrite generated workspace and lacks confirm/progress; no delete action. | Critical | Add ready-worker guard, confirm run/delete, row loading, progress preview, and delete endpoint. | `apps/dashboard/app/projects/page.tsx`, `services/api/app/main.py` | Todo |
-| Project detail | Progress is split across tabs; no clear current step, retry count, elapsed time, log controls, or copy errors. | Critical | Add pipeline progress panel, current step, latest log, filtered logs, copy buttons, clear logs confirm. | `apps/dashboard/app/projects/[id]/ProjectDetailClient.tsx` | Todo |
-| Logs | No standalone log viewer with search/filter/copy/clear. | High | Add `/logs` page and project event clear endpoint. | `apps/dashboard/app/logs/page.tsx`, `services/api/app/main.py` | Todo |
+| Projects | Run action can overwrite generated workspace and lacks confirm/progress; no delete action. | Critical | Add ready-worker guard, confirm run/delete, row loading, progress preview, and delete endpoint. | `apps/dashboard/app/projects/page.tsx`, `services/api/app/main.py` | Done |
+| Project detail | Progress is split across tabs; no clear current step, retry count, elapsed time, log controls, or copy errors. | Critical | Add pipeline progress panel, current step, latest log, filtered logs, copy buttons, clear logs confirm. | `apps/dashboard/app/projects/[id]/ProjectDetailClient.tsx` | Done |
+| Logs | No standalone log viewer with search/filter/copy/clear. | High | Add `/logs` page and project event clear endpoint. | `apps/dashboard/app/logs/page.tsx`, `services/api/app/main.py` | Done |
+| Setup Doctor | Users cannot diagnose missing local dependencies from the UI. | Critical | Add `/doctor` page and API endpoint for tool, service, worker, Flutter, and Codex checks. | `apps/dashboard/app/doctor/page.tsx`, `services/api/app/main.py` | Done |
 | Settings | No settings screen for local worker/model/retry/theme/notifications. | High | Add `/settings` page backed by localStorage for app preferences. | `apps/dashboard/app/settings/page.tsx` | Todo |
 | Safety | Policy gate exists only inside project detail and lacks release blocking explanation. | Medium | Improve project policy panel and overview readiness gates. | `ProjectDetailClient.tsx`, `docs/POLICY_GATES.md` | Todo |
 | Forms | Server/client validation is inconsistent; slugs, labels, budgets, and descriptions need constraints. | High | Add Pydantic and client validation with friendly errors. | `services/api/app/schemas.py`, client pages | Todo |
@@ -23,11 +24,13 @@ Status legend: Todo, In Progress, Done.
 
 ## Current Screens
 
-- Overview
+- Overview command center
+- Setup Doctor
 - API Keys
 - Workers
 - Ideas
 - Projects
+- Logs
 - Project detail with Overview, PRD, Agent Timeline, Logs, QA, Policy, Artifacts, Settings tabs
 
 ## Key UX Risks

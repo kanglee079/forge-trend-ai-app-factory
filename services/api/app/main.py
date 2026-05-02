@@ -1,3 +1,6 @@
+import shutil
+import socket
+import subprocess
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -15,6 +18,7 @@ from app.models import (
     ApiKey,
     Artifact,
     Build,
+    CostUsage,
     Idea,
     PolicyResult,
     Project,
@@ -23,6 +27,7 @@ from app.models import (
 )
 from app.queue import enqueue_pipeline
 from app.schemas import (
+    ActionResponse,
     AgentEventCreate,
     AgentEventRead,
     AgentRunCreate,
@@ -31,9 +36,12 @@ from app.schemas import (
     ApiKeyCreate,
     ApiKeyPatch,
     ApiKeyRead,
+    ApiKeyTestResponse,
     ArtifactCreate,
     ArtifactRead,
     BuildCreate,
+    DoctorCheck,
+    DoctorResponse,
     HealthResponse,
     IdeaCreate,
     IdeaRead,
@@ -49,7 +57,7 @@ from app.schemas import (
     WorkerRead,
     WorkerRegister,
 )
-from app.security import encrypt_secret, key_hint, redact, secret_fingerprint
+from app.security import decrypt_secret, encrypt_secret, key_hint, redact, secret_fingerprint
 
 app = FastAPI(title="ForgeTrend AI App Factory API", version="0.1.0")
 
@@ -73,9 +81,90 @@ def normalize_provider(provider: str) -> str:
     return provider.strip().lower()
 
 
+def ping_host(host: str, port: int, timeout: float = 0.8) -> tuple[bool, str]:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True, f"reachable on {host}:{port}"
+    except OSError as exc:
+        return False, str(exc)
+
+
+def run_check(command: list[str], timeout: int = 8) -> tuple[bool, str]:
+    if not shutil.which(command[0]):
+        return False, "not found"
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
+    except Exception as exc:
+        return False, str(exc)
+    output = (result.stdout or result.stderr).strip().splitlines()
+    return result.returncode == 0, output[0] if output else f"exit {result.returncode}"
+
+
+def doctor_check(id: str, label: str, ok: bool, detail: str, *, required: bool = True, guidance: str | None = None) -> DoctorCheck:
+    return DoctorCheck(id=id, label=label, status="passed" if ok else "failed", detail=detail, required=required, guidance=guidance)
+
+
+def build_doctor_report(db: Session) -> DoctorResponse:
+    checks: list[DoctorCheck] = []
+    tool_checks = [
+        ("git", "Git", ["git", "--version"], True, "Install Git and make sure it is available on PATH."),
+        ("node", "Node.js", ["node", "--version"], True, "Install Node.js 20+."),
+        ("pnpm", "pnpm", ["pnpm", "--version"], True, "Install pnpm with corepack enable, then corepack prepare pnpm@latest --activate."),
+        ("python", "Python", ["python3", "--version"], True, "Install Python 3.11+ and rerun setup."),
+        ("docker", "Docker", ["docker", "--version"], True, "Install Docker Desktop and start it."),
+        ("docker_compose", "Docker Compose", ["docker", "compose", "version"], True, "Install/update Docker Desktop so docker compose is available."),
+        ("flutter", "Flutter", ["flutter", "--version"], False, "Install Flutter and run flutter doctor."),
+        ("codex", "Codex CLI", ["codex", "--version"], False, "Install Codex CLI and run codex login."),
+        ("aider", "Aider", ["aider", "--version"], False, "Optional: install aider if you plan to use an aider adapter."),
+    ]
+    for id, label, command, required, guidance in tool_checks:
+        ok, detail = run_check(command)
+        checks.append(doctor_check(id, label, ok, detail, required=required, guidance=None if ok else guidance))
+
+    redis_ok, redis_detail = ping_host("127.0.0.1", 6379)
+    checks.append(doctor_check("redis", "Redis", redis_ok, redis_detail, guidance="Run docker compose up -d redis."))
+    postgres_ok, postgres_detail = ping_host("127.0.0.1", 5432)
+    checks.append(doctor_check("postgres", "Postgres", postgres_ok, postgres_detail, guidance="Run docker compose up -d postgres."))
+    minio_ok, minio_detail = ping_host("127.0.0.1", 9000)
+    checks.append(doctor_check("minio", "MinIO", minio_ok, minio_detail, required=False, guidance="Run docker compose up -d minio."))
+    checks.append(doctor_check("api", "API", True, "FastAPI responded to /doctor."))
+
+    workers = list(db.scalars(select(Worker)).all())
+    online_workers = [worker for worker in workers if worker.status == "online"]
+    ready_workers = [worker for worker in online_workers if worker.has_flutter and worker.has_codex]
+    checks.append(
+        doctor_check(
+            "worker_heartbeat",
+            "Worker heartbeat",
+            bool(online_workers),
+            f"{len(online_workers)} online / {len(workers)} registered",
+            guidance="Run codex login, then pnpm dev:worker.",
+        )
+    )
+    checks.append(
+        doctor_check(
+            "worker_pipeline_ready",
+            "Worker pipeline ready",
+            bool(ready_workers),
+            f"{len(ready_workers)} worker(s) report Flutter and Codex",
+            guidance="Install Flutter and Codex CLI on the worker machine, then restart pnpm dev:worker.",
+        )
+    )
+
+    required_failed = any(check.required and check.status != "passed" for check in checks)
+    warning_failed = any(check.status != "passed" for check in checks)
+    status = "failed" if required_failed else "warning" if warning_failed else "passed"
+    return DoctorResponse(status=status, generated_at=datetime.now(UTC), checks=checks)
+
+
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse(status="ok", service="forge-trend-api")
+
+
+@app.get("/doctor", response_model=DoctorResponse)
+def doctor(db: Session = Depends(get_db)) -> DoctorResponse:
+    return build_doctor_report(db)
 
 
 @app.post("/api-keys", response_model=ApiKeyRead)
@@ -125,6 +214,32 @@ def patch_api_key(id: UUID, payload: ApiKeyPatch, db: Session = Depends(get_db))
     db.commit()
     db.refresh(api_key)
     return api_key
+
+
+@app.delete("/api-keys/{id}", response_model=ActionResponse)
+def delete_api_key(id: UUID, db: Session = Depends(get_db)) -> ActionResponse:
+    api_key = get_or_404(db, ApiKey, id)
+    db.query(CostUsage).filter(CostUsage.api_key_id == id).update({CostUsage.api_key_id: None}, synchronize_session=False)
+    db.delete(api_key)
+    db.commit()
+    return ActionResponse(status="deleted", detail="API key deleted")
+
+
+@app.post("/api-keys/{id}/test", response_model=ApiKeyTestResponse)
+def test_api_key(id: UUID, db: Session = Depends(get_db)) -> ApiKeyTestResponse:
+    api_key = get_or_404(db, ApiKey, id)
+    if api_key.status != "active":
+        raise HTTPException(status_code=409, detail="Only active keys can be tested")
+    raw_key = decrypt_secret(api_key.encrypted_key)
+    if len(raw_key.strip()) < 8:
+        raise HTTPException(status_code=422, detail="Saved key is too short to use")
+    api_key.last_used_at = datetime.now(UTC)
+    db.commit()
+    return ApiKeyTestResponse(
+        status="passed",
+        provider=api_key.provider,
+        detail="Key decrypted and passed local validation. Provider network validation is not enabled yet.",
+    )
 
 
 @app.post("/workers/register", response_model=WorkerRead)
@@ -214,6 +329,17 @@ def get_project(id: UUID, db: Session = Depends(get_db)) -> Project:
     return get_or_404(db, Project, id)
 
 
+@app.delete("/projects/{id}", response_model=ActionResponse)
+def delete_project(id: UUID, db: Session = Depends(get_db)) -> ActionResponse:
+    project = get_or_404(db, Project, id)
+    db.query(CostUsage).filter(CostUsage.project_id == id).delete(synchronize_session=False)
+    for model in [Artifact, Build, PolicyResult, QAResult, AgentEvent, AgentRun]:
+        db.query(model).filter(model.project_id == id).delete(synchronize_session=False)
+    db.delete(project)
+    db.commit()
+    return ActionResponse(status="deleted", detail="Project and related run records deleted")
+
+
 @app.post("/projects/{id}/run-pipeline", response_model=PipelineRunResponse)
 def run_pipeline(id: UUID, db: Session = Depends(get_db)) -> PipelineRunResponse:
     project = get_or_404(db, Project, id)
@@ -225,10 +351,64 @@ def run_pipeline(id: UUID, db: Session = Depends(get_db)) -> PipelineRunResponse
     return PipelineRunResponse(project_id=project.id, status=project.status, queue=queue)
 
 
+@app.post("/projects/{id}/retry", response_model=PipelineRunResponse)
+def retry_pipeline(id: UUID, db: Session = Depends(get_db)) -> PipelineRunResponse:
+    project = get_or_404(db, Project, id)
+    project.status = "queued"
+    queue = enqueue_pipeline(project.id)
+    event = AgentEvent(project_id=project.id, step="pipeline", level="info", message="Retry requested and pipeline queued")
+    db.add(event)
+    db.commit()
+    return PipelineRunResponse(project_id=project.id, status=project.status, queue=queue)
+
+
+@app.post("/projects/{id}/stop", response_model=ActionResponse)
+def stop_pipeline(id: UUID, db: Session = Depends(get_db)) -> ActionResponse:
+    project = get_or_404(db, Project, id)
+    project.status = "stop_requested"
+    event = AgentEvent(
+        project_id=project.id,
+        step="pipeline",
+        level="warning",
+        message="Stop requested. Current worker pass may finish before the daemon observes cancellation.",
+    )
+    db.add(event)
+    db.commit()
+    return ActionResponse(status="stop_requested", detail="Stop requested for this project")
+
+
 @app.get("/projects/{id}/events", response_model=list[AgentEventRead])
 def list_project_events(id: UUID, db: Session = Depends(get_db)) -> list[AgentEvent]:
     get_or_404(db, Project, id)
     return list(db.scalars(select(AgentEvent).where(AgentEvent.project_id == id).order_by(AgentEvent.created_at)).all())
+
+
+@app.delete("/projects/{id}/events", response_model=ActionResponse)
+def clear_project_events(id: UUID, db: Session = Depends(get_db)) -> ActionResponse:
+    get_or_404(db, Project, id)
+    deleted = db.query(AgentEvent).filter(AgentEvent.project_id == id).delete(synchronize_session=False)
+    db.commit()
+    return ActionResponse(status="deleted", detail=f"Deleted {deleted} event(s)")
+
+
+@app.get("/events", response_model=list[AgentEventRead])
+def list_events(
+    project_id: UUID | None = None,
+    level: str | None = None,
+    search: str | None = None,
+    limit: int = 200,
+    db: Session = Depends(get_db),
+) -> list[AgentEvent]:
+    query = select(AgentEvent)
+    if project_id:
+        query = query.where(AgentEvent.project_id == project_id)
+    if level:
+        query = query.where(AgentEvent.level == level)
+    if search:
+        pattern = f"%{search}%"
+        query = query.where(AgentEvent.message.ilike(pattern))
+    query = query.order_by(desc(AgentEvent.created_at)).limit(min(max(limit, 1), 1000))
+    return list(db.scalars(query).all())
 
 
 @app.get("/projects/{id}/qa", response_model=list[QAResultRead])

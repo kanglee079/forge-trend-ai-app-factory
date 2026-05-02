@@ -14,6 +14,26 @@ class HealthResponse(BaseModel):
     service: str
 
 
+class ActionResponse(BaseModel):
+    status: str
+    detail: str
+
+
+class DoctorCheck(BaseModel):
+    id: str
+    label: str
+    status: str
+    detail: str
+    required: bool = True
+    guidance: str | None = None
+
+
+class DoctorResponse(BaseModel):
+    status: str
+    generated_at: datetime
+    checks: list[DoctorCheck]
+
+
 class ApiKeyCreate(BaseModel):
     provider: str
     label: str
@@ -43,6 +63,12 @@ class ApiKeyRead(ApiModel):
     assigned_worker_id: UUID | None
     created_at: datetime
     last_used_at: datetime | None
+
+
+class ApiKeyTestResponse(BaseModel):
+    status: str
+    provider: str
+    detail: str
 
 
 class WorkerRegister(BaseModel):

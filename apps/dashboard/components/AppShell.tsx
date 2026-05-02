@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { Activity, CheckCircle2, KeyRound, LayoutDashboard, Lightbulb, Moon, Server, Smartphone, Sun } from "lucide-react";
+import { Activity, CheckCircle2, FileText, KeyRound, LayoutDashboard, Lightbulb, Moon, Server, Stethoscope, Smartphone, Sun } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { FeedbackProvider } from "@/components/feedback";
@@ -11,10 +11,12 @@ import { Badge, Button } from "@/components/ui";
 
 const navItems = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
+  { href: "/doctor", label: "Doctor", icon: Stethoscope },
   { href: "/api-keys", label: "API Keys", icon: KeyRound },
   { href: "/workers", label: "Workers", icon: Server },
   { href: "/ideas", label: "Ideas", icon: Lightbulb },
-  { href: "/projects", label: "Projects", icon: Smartphone }
+  { href: "/projects", label: "Projects", icon: Smartphone },
+  { href: "/logs", label: "Logs", icon: FileText }
 ];
 
 type HealthState = {
