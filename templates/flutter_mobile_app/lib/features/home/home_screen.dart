@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 
 import '../../core/app_content.dart';
 import '../../core/widgets/status_card.dart';
+import '../core_flow/core_flow_screen.dart';
 import '../onboarding/onboarding_screen.dart';
+import '../paywall/paywall_screen.dart';
 import '../settings/settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -74,6 +76,13 @@ class _HomeDashboard extends StatelessWidget {
           description: 'Replace this with the app-specific core loop.',
         ),
         const SizedBox(height: 12),
+        StatusCard(
+          title: 'Core flow',
+          value: AppContent.coreFeatures.first,
+          icon: Icons.route_outlined,
+          description: 'Local sample data is ready for the first feature pass.',
+        ),
+        const SizedBox(height: 12),
         const StatusCard(
           title: 'Privacy posture',
           value: 'Local-first MVP',
@@ -87,6 +96,22 @@ class _HomeDashboard extends StatelessWidget {
           icon: Icons.lock_outline,
           description: 'Production publishing is intentionally blocked.',
         ),
+        const SizedBox(height: 16),
+        FilledButton(
+          onPressed: () => Navigator.of(context).push(
+            MaterialPageRoute<void>(builder: (_) => const CoreFlowScreen()),
+          ),
+          child: const Text('Open core flow'),
+        ),
+        if (AppContent.subscriptionEnabled) ...[
+          const SizedBox(height: 8),
+          OutlinedButton(
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const PaywallScreen()),
+            ),
+            child: const Text('Premium'),
+          ),
+        ],
       ],
     );
   }

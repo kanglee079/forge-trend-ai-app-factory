@@ -1,7 +1,7 @@
 "use client";
 
 import { AlertTriangle, CheckCircle2, Circle, Clock, Copy, Loader2, XCircle } from "lucide-react";
-import { AgentEvent, Artifact, PolicyResult, Project, QAResult } from "@/lib/api";
+import type { AgentEvent, Artifact, PolicyResult, Project, QAResult } from "@/lib/api";
 import { cn, formatDate } from "@/lib/utils";
 import { Badge, Button, Card, Progress } from "@/components/ui";
 

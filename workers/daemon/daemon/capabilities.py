@@ -30,4 +30,5 @@ def detect_capabilities() -> dict[str, object]:
         "has_xcode": system == "darwin" and has_command("xcodebuild"),
         "has_codex": has_command("codex"),
         "has_aider": has_command("aider"),
+        "worker_enable_codex": settings.worker_enable_codex,
     }

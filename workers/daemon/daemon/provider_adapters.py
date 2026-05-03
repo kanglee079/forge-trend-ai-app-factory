@@ -32,11 +32,18 @@ class ProviderUnavailable(RuntimeError):
     pass
 
 
+def check_codex_authenticated() -> None:
+    if not CODEX_CLI.available:
+        raise ProviderUnavailable("Codex CLI is not installed or not on PATH")
+    completed = subprocess.run([CODEX_CLI.command, "login", "status"], capture_output=True, text=True, timeout=8, check=False)
+    if completed.returncode != 0:
+        raise ProviderUnavailable("Codex CLI is installed but not authenticated. Run: codex login")
+
+
 def run_codex_cli(prompt: str, *, cwd: Path, workspace: Path, timeout: int | None = None) -> subprocess.CompletedProcess[str]:
     if not settings.worker_enable_codex:
         raise ProviderUnavailable("Codex CLI is disabled by WORKER_ENABLE_CODEX")
-    if not CODEX_CLI.available:
-        raise ProviderUnavailable("Codex CLI is not installed or not on PATH")
+    check_codex_authenticated()
 
     command = [
         CODEX_CLI.command,

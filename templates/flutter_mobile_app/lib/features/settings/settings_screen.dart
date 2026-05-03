@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../privacy/privacy_screen.dart';
+
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
 
@@ -25,6 +27,13 @@ class SettingsScreen extends StatelessWidget {
             title: Text('Privacy policy'),
             subtitle: Text('Placeholder included in project workspace.'),
           ),
+        ),
+        const SizedBox(height: 12),
+        FilledButton(
+          onPressed: () => Navigator.of(context).push(
+            MaterialPageRoute<void>(builder: (_) => const PrivacyScreen()),
+          ),
+          child: const Text('Privacy and about'),
         ),
       ],
     );

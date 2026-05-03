@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { Loader2, RefreshCw } from "lucide-react";
 import { ApiError, api, Worker } from "@/lib/api";
-import { formatDate } from "@/lib/utils";
+import { formatDate, isReadyWorker } from "@/lib/utils";
 import { Badge, Button, Notice, PageHeader, StatusBadge, Table, Td, Th } from "@/components/ui";
 
 export default function WorkersPage() {
@@ -39,7 +39,7 @@ export default function WorkersPage() {
     return () => clearInterval(timer);
   }, []);
 
-  const readyWorker = workers.find((worker) => worker.status === "online" && worker.has_codex && worker.has_flutter);
+  const readyWorker = workers.find(isReadyWorker);
 
   return (
     <>
@@ -55,9 +55,9 @@ export default function WorkersPage() {
       />
       {notice ? <Notice tone={notice.tone}>{notice.message}</Notice> : null}
       {readyWorker ? (
-        <Notice tone="success">{readyWorker.machine_name} is ready for Codex and Flutter pipeline runs.</Notice>
+        <Notice tone="success">{readyWorker.machine_name} is ready. {readyWorker.worker_enable_codex ? "Mode: Codex coding mode" : "Mode: Deterministic scaffold mode"}</Notice>
       ) : (
-        <Notice tone="warning">No online local worker has both Codex and Flutter. Run codex login, then pnpm dev:worker on this machine.</Notice>
+        <Notice tone="warning">No ready local worker is online. Deterministic mode requires Flutter; Codex mode requires Flutter plus Codex CLI auth.</Notice>
       )}
       <Table>
         <thead><tr><Th>Machine</Th><Th>OS</Th><Th>Capabilities</Th><Th>Status</Th><Th>Current job</Th><Th>Heartbeat</Th></tr></thead>
@@ -69,6 +69,7 @@ export default function WorkersPage() {
               <Td>
                 <div className="flex flex-wrap gap-1">
                   {capabilities.map(([key, label]) => <Badge key={key} tone={worker[key] ? "success" : "neutral"}>{label}</Badge>)}
+                  <Badge>{worker.worker_enable_codex ? "Mode: Codex coding mode" : "Mode: Deterministic scaffold mode"}</Badge>
                 </div>
               </Td>
               <Td><StatusBadge status={worker.status} /></Td>

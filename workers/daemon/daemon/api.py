@@ -22,6 +22,21 @@ class FactoryApi:
     def list_ideas(self) -> list[dict[str, Any]]:
         return self._request("GET", "/ideas")
 
+    def list_project_events(self, project_id: str) -> list[dict[str, Any]]:
+        return self._request("GET", f"/projects/{project_id}/events")
+
+    def list_project_qa(self, project_id: str) -> list[dict[str, Any]]:
+        return self._request("GET", f"/projects/{project_id}/qa")
+
+    def list_project_policy(self, project_id: str) -> list[dict[str, Any]]:
+        return self._request("GET", f"/projects/{project_id}/policy")
+
+    def list_project_artifacts(self, project_id: str) -> list[dict[str, Any]]:
+        return self._request("GET", f"/projects/{project_id}/artifacts")
+
+    def get_factory_brief_events(self, brief_id: str) -> list[dict[str, Any]]:
+        return self._request("GET", f"/factory-briefs/{brief_id}/events")
+
     def factory_state(self) -> dict[str, Any]:
         return self._request("GET", "/factory/state")
 

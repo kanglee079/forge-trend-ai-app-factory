@@ -37,6 +37,10 @@ export type DoctorResponse = {
   status: string;
   generated_at: string;
   checks: DoctorCheck[];
+  worker_enable_codex: boolean;
+  worker_mode_label: string;
+  research_enable_web: boolean;
+  research_mode_label: string;
 };
 
 export type FactoryState = {
@@ -81,6 +85,7 @@ export type Worker = {
   has_xcode: boolean;
   has_codex: boolean;
   has_aider: boolean;
+  worker_enable_codex: boolean;
   status: string;
   last_heartbeat_at: string | null;
   current_job_id: string | null;
@@ -206,6 +211,7 @@ export type Notification = {
   message: string;
   entity_type: string | null;
   entity_id: string | null;
+  metadata_json: Record<string, unknown>;
   read_at: string | null;
   created_at: string;
 };

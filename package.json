@@ -5,7 +5,7 @@
   "description": "Trend-to-app factory MVP with dashboard, FastAPI orchestrator, local worker daemon, and Flutter output.",
   "packageManager": "pnpm@10.28.0",
   "scripts": {
-    "dev": "pnpm --parallel dev:api dev:dashboard dev:worker",
+    "dev": "node scripts/dev.mjs",
     "dev:dashboard": "pnpm --filter @forge/dashboard dev",
     "dev:api": "node scripts/venv-run.mjs services/api -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload",
     "dev:worker": "node scripts/venv-run.mjs workers/daemon -m daemon.main",
@@ -14,10 +14,17 @@
     "build": "pnpm --filter @forge/shared build && pnpm --filter @forge/dashboard build",
     "lint": "pnpm --filter @forge/dashboard lint",
     "smoke": "node scripts/smoke_test.mjs",
-    "e2e:factory": "node scripts/e2e_factory_run.mjs",
+    "e2e:factory": "cross-env WORKER_ENABLE_CODEX=false node scripts/e2e_factory_run.mjs",
+    "e2e:factory:codex": "cross-env WORKER_ENABLE_CODEX=true node scripts/e2e_factory_codex_run.mjs",
+    "e2e:research-web": "cross-env RESEARCH_ENABLE_WEB=true node scripts/e2e_research_web.mjs",
+    "e2e:ui": "playwright test",
     "doctor:ports": "node scripts/doctor_ports.mjs",
     "reset:local": "node scripts/reset_local.mjs",
     "db:migrate": "node scripts/venv-run.mjs services/api -m alembic upgrade head",
     "doctor": "node scripts/venv-run.mjs . scripts/doctor.py"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "cross-env": "^10.1.0"
   }
 }

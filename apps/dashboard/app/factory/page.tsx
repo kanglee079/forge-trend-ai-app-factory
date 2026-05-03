@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Bot, CheckCircle2, Loader2, Play, RefreshCw, Rocket, Wand2 } from "lucide-react";
-import { api, ApiError, FactoryBrief, FactoryBriefDetail, Notification } from "@/lib/api";
+import { api, ApiError, type DoctorResponse, type FactoryBrief, type FactoryBriefDetail, type Notification } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
 import { Badge, Button, Card, Input, Label, Notice, PageHeader, Select, Skeleton, StatusBadge, Textarea } from "@/components/ui";
 import { useFeedback } from "@/components/feedback";
@@ -20,6 +20,7 @@ export default function FactoryPage() {
   const [selected, setSelected] = useState<FactoryBriefDetail | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [events, setEvents] = useState<Notification[]>([]);
+  const [doctor, setDoctor] = useState<DoctorResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [startingId, setStartingId] = useState<string | null>(null);
@@ -29,7 +30,8 @@ export default function FactoryPage() {
   async function load(selectId?: string) {
     setLoading(true);
     try {
-      const items = await api.factoryBriefs();
+      const [items, doctorReport] = await Promise.all([api.factoryBriefs(), api.doctor().catch(() => null)]);
+      setDoctor(doctorReport);
       setBriefs(items);
       const targetId = selectId ?? selectedId ?? items[0]?.id;
       if (targetId) {
@@ -102,7 +104,9 @@ export default function FactoryPage() {
       feedback.notify({ tone: "success", message: `Factory brief queued on ${response.queue}.` });
       await load(id);
     } catch (error) {
-      feedback.notify({ tone: "danger", message: error instanceof ApiError ? error.detail : "Could not start factory brief." });
+      const message = error instanceof ApiError ? error.detail : "Could not start factory brief.";
+      feedback.notify({ tone: "danger", message });
+      setNotice({ tone: "danger", message });
     } finally {
       setStartingId(null);
     }
@@ -124,6 +128,10 @@ export default function FactoryPage() {
 
   const selectedCandidate = useMemo(() => selected?.candidates.find((candidate) => candidate.status === "selected"), [selected]);
   const topCandidate = selected?.candidates[0];
+  const failureEvent = events.find((event) => event.title === "brief_failed" || event.metadata_json?.step === "brief_failed");
+  const fallbackFinding = selected?.findings.find((finding) => Boolean(finding.evidence_json?.fallback));
+  const webFinding = selected?.findings.find((finding) => finding.evidence_json?.provider === "web_provider" && finding.evidence_json?.source_url);
+  const modeBadge = doctor?.worker_mode_label ?? "Mode: unknown";
 
   return (
     <>
@@ -138,6 +146,11 @@ export default function FactoryPage() {
         }
       />
       {notice ? <Notice tone={notice.tone}>{notice.message}</Notice> : null}
+      {doctor ? (
+        <Notice tone="neutral">
+          {doctor.worker_mode_label}. {doctor.research_mode_label}
+        </Notice>
+      ) : null}
 
       <div className="grid gap-5 xl:grid-cols-[0.95fr_1.25fr]">
         <Card>
@@ -146,6 +159,10 @@ export default function FactoryPage() {
             <h2 className="text-base font-semibold">New Factory Brief</h2>
           </div>
           <form onSubmit={submit} className="space-y-4">
+            <div className="rounded-md border border-border bg-background p-3 text-sm">
+              <div className="font-medium">{modeBadge}</div>
+              <div className="mt-1 text-muted-foreground">{doctor?.research_mode_label ?? "Research mode loads after doctor check."}</div>
+            </div>
             <div>
               <Label>Instruction</Label>
               <Textarea
@@ -289,6 +306,8 @@ export default function FactoryPage() {
                     <StatusBadge status={selected.status} />
                     <Badge>{selected.mode}</Badge>
                     <Badge>{selected.target_platforms.join(", ")}</Badge>
+                    {doctor ? <Badge>{doctor.worker_mode_label}</Badge> : null}
+                    {webFinding ? <Badge tone="success">web evidence</Badge> : fallbackFinding ? <Badge tone="warning">deterministic fallback</Badge> : null}
                   </div>
                   <h2 className="text-lg font-semibold">{selected.title}</h2>
                   <p className="mt-1 text-sm text-muted-foreground">{selected.raw_prompt}</p>
@@ -313,20 +332,17 @@ export default function FactoryPage() {
                 <Metric label="Top score" value={topCandidate ? `${topCandidate.opportunity_score}` : "-"} />
                 <Metric label="Selected" value={selectedCandidate ? "yes" : "no"} />
               </div>
+              {failureEvent ? <FailureNotice event={failureEvent} /> : null}
+              {selected.mode === "auto_trend" && fallbackFinding && !webFinding ? (
+                <Notice tone="warning">Auto trend used deterministic fallback. Set RESEARCH_ENABLE_WEB=true and RESEARCH_ALLOWED_URLS to fetch low-volume web evidence.</Notice>
+              ) : null}
 
               <div className="grid gap-5 xl:grid-cols-[0.8fr_1.2fr]">
                 <div>
                   <h3 className="mb-3 text-sm font-semibold">Factory Timeline</h3>
                   <div className="mb-5 space-y-3">
                     {events.map((event) => (
-                      <div key={event.id} className="rounded-md border border-border bg-background p-3">
-                        <div className="mb-1 flex flex-wrap items-center gap-2">
-                          <Badge tone={event.level === "success" ? "success" : event.level === "warning" ? "warning" : event.level === "error" || event.level === "danger" ? "danger" : "neutral"}>{event.level}</Badge>
-                          <span className="text-xs text-muted-foreground">{formatDate(event.created_at)}</span>
-                        </div>
-                        <div className="font-medium">{event.title}</div>
-                        <p className="mt-1 text-sm text-muted-foreground">{event.message}</p>
-                      </div>
+                      <TimelineEvent key={event.id} event={event} />
                     ))}
                     {!events.length ? <div className="rounded-md bg-muted p-4 text-sm text-muted-foreground">Timeline events appear as the worker processes this brief.</div> : null}
                   </div>
@@ -337,9 +353,13 @@ export default function FactoryPage() {
                         <div className="mb-2 flex flex-wrap items-center gap-2">
                           <Badge>{finding.source}</Badge>
                           <Badge tone={finding.confidence_score >= 70 ? "success" : "warning"}>{finding.confidence_score}/100</Badge>
+                          {finding.evidence_json?.provider ? <Badge>{String(finding.evidence_json.provider)}</Badge> : null}
+                          {finding.evidence_json?.source_url ? <Badge tone="success">source URL</Badge> : null}
+                          {finding.evidence_json?.fallback ? <Badge tone="warning">fallback</Badge> : null}
                         </div>
                         <div className="font-medium">{finding.title}</div>
                         <p className="mt-1 text-sm text-muted-foreground">{finding.summary}</p>
+                        {finding.evidence_json?.source_url ? <p className="mt-2 break-all text-xs text-muted-foreground">{String(finding.evidence_json.source_url)}</p> : null}
                       </div>
                     ))}
                     {!selected.findings.length ? <div className="rounded-md bg-muted p-4 text-sm text-muted-foreground">Research has not run yet.</div> : null}
@@ -389,6 +409,48 @@ function Metric({ label, value }: { label: string; value: string }) {
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className="mt-1 text-xl font-semibold">{value}</div>
     </div>
+  );
+}
+
+function toneForLevel(level: string) {
+  return level === "success" ? "success" : level === "warning" ? "warning" : level === "error" || level === "danger" ? "danger" : "neutral";
+}
+
+function TimelineEvent({ event }: { event: Notification }) {
+  const metadata = event.metadata_json ?? {};
+  const provider = metadata.provider ?? (Array.isArray(metadata.providers) ? metadata.providers.join(", ") : null);
+  const projectId = typeof metadata.project_id === "string" ? metadata.project_id : null;
+  return (
+    <div className="rounded-md border border-border bg-background p-3">
+      <div className="mb-1 flex flex-wrap items-center gap-2">
+        <Badge tone={toneForLevel(event.level)}>{event.level}</Badge>
+        {metadata.step ? <Badge>{String(metadata.step)}</Badge> : null}
+        {provider ? <Badge>{String(provider)}</Badge> : null}
+        <span className="text-xs text-muted-foreground">{formatDate(event.created_at)}</span>
+      </div>
+      <div className="font-medium">{event.title}</div>
+      <p className="mt-1 whitespace-pre-line text-sm text-muted-foreground">{event.message}</p>
+      {projectId ? (
+        <Link href={`/projects/${projectId}`} className="mt-2 inline-block text-xs text-primary">
+          Linked project
+        </Link>
+      ) : null}
+      {metadata.reason ? <p className="mt-2 text-xs text-red-700">Reason: {String(metadata.reason)}</p> : null}
+      {metadata.next_action ? <p className="mt-1 text-xs text-muted-foreground">Next action: {String(metadata.next_action)}</p> : null}
+    </div>
+  );
+}
+
+function FailureNotice({ event }: { event: Notification }) {
+  const metadata = event.metadata_json ?? {};
+  return (
+    <Notice tone="danger">
+      <span className="whitespace-pre-line">
+        {`Failed at: ${String(metadata.failed_at ?? metadata.step ?? event.title)}
+Reason: ${String(metadata.reason ?? event.message)}
+Next action: ${String(metadata.next_action ?? "Check doctor output and worker logs, then retry.")}`}
+      </span>
+    </Notice>
   );
 }
 

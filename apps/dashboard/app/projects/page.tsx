@@ -4,7 +4,7 @@ import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
 import { Loader2, Play, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { ApiError, api, Idea, Project, Worker } from "@/lib/api";
-import { formatDate } from "@/lib/utils";
+import { formatDate, isReadyWorker } from "@/lib/utils";
 import { Button, Card, Input, Label, Notice, PageHeader, Select, StatusBadge, Table, Td, Th } from "@/components/ui";
 import { useFeedback } from "@/components/feedback";
 
@@ -72,9 +72,9 @@ export default function ProjectsPage() {
     if (runningId) {
       return;
     }
-    const activeLocalWorker = workers.find((worker) => worker.status === "online" && worker.has_codex && worker.has_flutter);
+    const activeLocalWorker = workers.find(isReadyWorker);
     if (!activeLocalWorker) {
-      setNotice({ tone: "warning", message: "No online local worker with Codex and Flutter is available. Start pnpm dev:worker before running the pipeline." });
+      setNotice({ tone: "warning", message: "No ready local worker is available. Deterministic workers need Flutter; Codex workers need Flutter plus codex login." });
       return;
     }
     const project = projects.find((item) => item.id === projectId);
@@ -121,7 +121,7 @@ export default function ProjectsPage() {
     }
   }
 
-  const hasReadyWorker = workers.some((worker) => worker.status === "online" && worker.has_codex && worker.has_flutter);
+  const hasReadyWorker = workers.some(isReadyWorker);
 
   return (
     <>
@@ -132,7 +132,7 @@ export default function ProjectsPage() {
       />
       {notice ? <Notice tone={notice.tone}>{notice.message}</Notice> : null}
       {!hasReadyWorker ? (
-        <Notice tone="warning">Local worker is not ready. Open a terminal, run codex login, then pnpm dev:worker so the pipeline can control Codex and Flutter on this machine.</Notice>
+        <Notice tone="warning">Local worker is not ready. Deterministic mode requires an online worker with Flutter. Codex mode also requires Codex CLI and codex login.</Notice>
       ) : null}
       <Card className="mb-6">
         <form onSubmit={submit} className="grid gap-4 md:grid-cols-[1fr_1fr_1fr_auto]">

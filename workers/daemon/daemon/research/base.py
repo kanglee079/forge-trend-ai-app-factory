@@ -12,5 +12,11 @@ class ResearchBundle:
 class ResearchProvider(Protocol):
     name: str
 
+    def available(self) -> bool:
+        ...
+
+    def collect(self, brief: dict[str, Any]) -> list[dict[str, Any]]:
+        ...
+
     def run(self, brief: dict[str, Any]) -> ResearchBundle:
         ...

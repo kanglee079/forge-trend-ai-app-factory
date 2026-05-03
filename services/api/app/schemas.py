@@ -32,6 +32,10 @@ class DoctorResponse(BaseModel):
     status: str
     generated_at: datetime
     checks: list[DoctorCheck]
+    worker_enable_codex: bool = True
+    worker_mode_label: str = "Mode: Codex coding mode"
+    research_enable_web: bool = False
+    research_mode_label: str = "Research: deterministic fallback"
 
 
 class FactoryState(ApiModel):
@@ -144,6 +148,7 @@ class WorkerRegister(BaseModel):
     has_xcode: bool = False
     has_codex: bool = False
     has_aider: bool = False
+    worker_enable_codex: bool = True
 
 
 class WorkerHeartbeat(BaseModel):
@@ -162,6 +167,7 @@ class WorkerRead(ApiModel):
     has_xcode: bool
     has_codex: bool
     has_aider: bool
+    worker_enable_codex: bool = True
     status: str
     last_heartbeat_at: datetime | None
     current_job_id: str | None
@@ -407,6 +413,7 @@ class NotificationRead(ApiModel):
     message: str
     entity_type: str | None
     entity_id: UUID | None
+    metadata_json: dict = Field(default_factory=dict)
     read_at: datetime | None
     created_at: datetime
 

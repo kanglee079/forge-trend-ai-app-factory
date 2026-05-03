@@ -33,7 +33,7 @@ class TextExtractor(HTMLParser):
 
 
 class WebResearchProvider:
-    name = "web"
+    name = "web_provider"
 
     def __init__(self, urls: list[str], *, allowed_domains: list[str], timeout_seconds: float = 8.0, delay_seconds: float = 1.0) -> None:
         self.urls = urls
@@ -41,14 +41,21 @@ class WebResearchProvider:
         self.timeout_seconds = timeout_seconds
         self.delay_seconds = delay_seconds
 
+    def available(self) -> bool:
+        allowed_urls = [url for url in self.urls if url.strip()]
+        return bool(allowed_urls and self.allowed_domains)
+
+    def collect(self, brief: dict[str, Any]) -> list[dict[str, Any]]:
+        return self.run(brief).findings
+
     def run(self, brief: dict[str, Any]) -> ResearchBundle:
         evidence: list[dict[str, Any]] = []
         findings: list[dict[str, Any]] = []
-        for url in self.urls[:8]:
+        for url in self.urls[:3]:
             parsed = urlparse(url)
             domain = parsed.netloc.lower()
             if not parsed.scheme.startswith("http") or not self._allowed(domain):
-                evidence.append({"url": url, "status": "skipped", "reason": "domain_not_allowed"})
+                evidence.append({"provider": self.name, "source_url": url, "status": "skipped", "reason": "domain_not_allowed", "fallback": True})
                 continue
             try:
                 with httpx.Client(timeout=self.timeout_seconds, follow_redirects=True) as client:
@@ -60,23 +67,32 @@ class WebResearchProvider:
                     parser.feed(text[:300000])
                     text = parser.text()
                 summary = " ".join(text.split())[:900]
-                evidence.append({"url": str(response.url), "status_code": response.status_code, "content_type": content_type})
+                extracted_chars = len(summary)
+                evidence_item = {
+                    "provider": self.name,
+                    "source_url": str(response.url),
+                    "http_status": response.status_code,
+                    "content_type": content_type,
+                    "extracted_chars": extracted_chars,
+                    "fallback": False,
+                }
+                evidence.append(evidence_item)
                 if response.status_code < 400 and summary:
                     findings.append(
                         {
-                            "source": "web",
+                            "source": self.name,
                             "title": f"Web signal from {domain}",
                             "summary": summary,
                             "category": brief.get("target_category"),
                             "keywords": [domain, "web", "trend"],
                             "pain_points": ["Validate this signal manually before release decisions."],
                             "competitor_gaps": ["External web evidence needs review and synthesis."],
-                            "evidence_json": {"url": str(response.url), "provider": self.name},
+                            "evidence_json": evidence_item,
                             "confidence_score": 55,
                         }
                     )
             except Exception as exc:
-                evidence.append({"url": url, "status": "failed", "reason": str(exc)})
+                evidence.append({"provider": self.name, "source_url": url, "status": "failed", "reason": str(exc), "fallback": True})
             time.sleep(self.delay_seconds)
         return ResearchBundle(findings=findings, candidates=[], evidence=evidence)
 

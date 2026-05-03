@@ -14,5 +14,29 @@ void main() {
 
     expect(find.text('Today'), findsOneWidget);
     expect(find.text('Next action'), findsOneWidget);
+    expect(find.text('Core flow'), findsOneWidget);
+  });
+
+  testWidgets('paywall visible when subscription enabled', (tester) async {
+    await tester.pumpWidget(const ForgeTrendApp());
+
+    await tester.tap(find.text('Start'));
+    await tester.pumpAndSettle();
+
+    if (AppContent.subscriptionEnabled) {
+      expect(find.text('Premium'), findsOneWidget);
+    }
+  });
+
+  testWidgets('settings and privacy screen exists', (tester) async {
+    await tester.pumpWidget(const ForgeTrendApp());
+
+    await tester.tap(find.text('Start'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Settings'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Settings'), findsWidgets);
+    expect(find.text('Privacy policy'), findsOneWidget);
   });
 }

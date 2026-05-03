@@ -22,6 +22,7 @@ class WorkerSettings(BaseSettings):
     research_allowed_domains: str = "github.com,pub.dev,producthunt.com,reddit.com"
     research_web_timeout_seconds: float = 8.0
     research_web_delay_seconds: float = 1.0
+    research_enable_web: bool = False
 
 
 settings = WorkerSettings()

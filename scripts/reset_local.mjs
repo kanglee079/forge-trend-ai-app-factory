@@ -5,6 +5,7 @@ import { join } from "node:path";
 const root = process.cwd();
 const resetWorkspaces = process.env.RESET_WORKSPACES === "true";
 const dryRun = process.env.DRY_RUN === "true";
+const forceReset = process.env.FORCE_RESET === "true";
 
 const ports = [3000, 8000];
 const processPatterns = [
@@ -73,13 +74,23 @@ function killPid(pid, reason) {
   }
 }
 
+function belongsToForgeTrend(command, { allowRepoPath = false } = {}) {
+  return processPatterns.some((pattern) => command.includes(pattern)) || (allowRepoPath && command.includes("forge-trend-ai-app-factory"));
+}
+
 function stopLocalProcesses() {
   const seen = new Set();
   for (const port of ports) {
     for (const pid of pidsForPort(port)) {
       if (seen.has(pid)) continue;
-      seen.add(pid);
-      killPid(pid, `port ${port}`);
+      const command = commandForPid(pid);
+      console.log(`Port ${port} is used by pid ${pid}: ${command || "unknown command"}`);
+      if (forceReset || belongsToForgeTrend(command, { allowRepoPath: true })) {
+        seen.add(pid);
+        killPid(pid, forceReset ? `port ${port}, FORCE_RESET=true` : `ForgeTrend process on port ${port}`);
+      } else {
+        console.log(`Port ${port} is used by another process. Set FORCE_RESET=true to kill it.`);
+      }
     }
   }
   if (process.platform !== "win32") {
@@ -88,7 +99,7 @@ function stopLocalProcesses() {
       const trimmed = line.trim();
       const [pid] = trimmed.split(/\s+/, 1);
       if (!pid || seen.has(pid)) continue;
-      if (processPatterns.some((pattern) => trimmed.includes(pattern))) {
+      if (belongsToForgeTrend(trimmed)) {
         seen.add(pid);
         killPid(pid, "ForgeTrend dev process");
       }
@@ -120,6 +131,8 @@ function cleanCaches() {
 async function main() {
   console.log("ForgeTrend local reset");
   console.log("======================");
+  console.log(forceReset ? "FORCE_RESET=true: port-only kills are enabled." : "Safe mode: only ForgeTrend-owned port processes will be stopped.");
+  run("docker", ["compose", "stop", "api", "dashboard", "worker-daemon"], { stdio: "inherit", allowFail: true });
   stopLocalProcesses();
   cleanCaches();
   run("docker", ["compose", "up", "-d", "postgres", "redis", "minio"], { stdio: "inherit" });
@@ -133,6 +146,7 @@ async function main() {
   console.log("  pnpm e2e:factory");
   console.log("");
   console.log("Workspaces were preserved. Set RESET_WORKSPACES=true only when you intentionally want to remove generated runs.");
+  console.log("Set FORCE_RESET=true only when you intentionally want to kill unrelated processes on ports 3000/8000.");
 }
 
 main().catch((error) => {

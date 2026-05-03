@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { Activity, AlertTriangle, CheckCircle2, KeyRound, Loader2, Pause, Play, RefreshCw, Server, Smartphone, Square } from "lucide-react";
 import { AgentEvent, api, ApiError, ApiKey, Artifact, DoctorResponse, FactoryState, Project, Worker } from "@/lib/api";
-import { formatDate } from "@/lib/utils";
+import { formatDate, isReadyWorker, modeLabelFromDoctor } from "@/lib/utils";
 import { Badge, Button, Card, EmptyState, Notice, PageHeader, Progress, Skeleton, StatusBadge } from "@/components/ui";
 
 type OverviewState = {
@@ -68,7 +68,7 @@ export default function OverviewPage() {
   const recentFailures = data?.events.filter((event) => event.level === "error" || event.level === "warning").slice(0, 5) ?? [];
   const latestArtifacts = [...(data?.artifacts ?? [])].sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 5);
   const onlineWorkers = data?.workers.filter((worker) => worker.status === "online") ?? [];
-  const readyWorkers = onlineWorkers.filter((worker) => worker.has_codex && worker.has_flutter);
+  const readyWorkers = onlineWorkers.filter(isReadyWorker);
   const activeKeys = data?.keys.filter((key) => key.status === "active") ?? [];
 
   if (!data && loading) {
@@ -118,6 +118,8 @@ export default function OverviewPage() {
           <div className="mb-4 rounded-md border border-border bg-background p-3">
             <div className="text-sm text-muted-foreground">Mode</div>
             <div className="mt-1 text-xl font-semibold capitalize">{data?.factory?.mode ?? "unknown"}</div>
+            <div className="mt-2"><Badge>{modeLabelFromDoctor(data?.doctor)}</Badge></div>
+            {data?.doctor?.research_mode_label ? <div className="mt-2 text-xs text-muted-foreground">{data.doctor.research_mode_label}</div> : null}
           </div>
           <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-1">
             <Button type="button" onClick={() => setFactoryMode("running")} disabled={Boolean(modeSaving)}>
@@ -221,14 +223,14 @@ export default function OverviewPage() {
 
 function calculateReadiness(data: OverviewState) {
   const onlineWorkers = data.workers.filter((worker) => worker.status === "online");
-  const readyWorkers = onlineWorkers.filter((worker) => worker.has_codex && worker.has_flutter);
+  const readyWorkers = onlineWorkers.filter(isReadyWorker);
   const activeKeys = data.keys.filter((key) => key.status === "active");
   const requiredDoctorPassed = data.doctor ? data.doctor.checks.filter((check) => check.required).every((check) => check.status === "passed") : data.health.status === "ok";
   const items = [
     { label: "API online", complete: data.health.status === "ok", detail: data.health.status === "ok" ? "FastAPI is responding." : "Start the API service.", href: "/doctor" },
     { label: "Core services", complete: requiredDoctorPassed, detail: data.doctor?.status ?? "Doctor unavailable", href: "/doctor" },
     { label: "Provider key", complete: activeKeys.length > 0, detail: `${activeKeys.length} active key(s)`, href: "/api-keys" },
-    { label: "Pipeline worker", complete: readyWorkers.length > 0, detail: `${readyWorkers.length} ready / ${onlineWorkers.length} online`, href: "/workers" },
+    { label: "Pipeline worker", complete: readyWorkers.length > 0, detail: `${readyWorkers.length} ready / ${onlineWorkers.length} online · ${modeLabelFromDoctor(data.doctor)}`, href: "/workers" },
     { label: "Project exists", complete: data.projects.length > 0, detail: `${data.projects.length} project(s)`, href: "/projects" }
   ];
   return { score: Math.round((items.filter((item) => item.complete).length / items.length) * 100), items };

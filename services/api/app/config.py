@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     pipeline_queue_name: str = "project_pipeline"
     factory_brief_queue_name: str = "factory_brief_queue"
     worker_stale_seconds: int = 60
+    worker_enable_codex: bool = True
+    research_enable_web: bool = False
+    research_allowed_urls: str = ""
+    research_allowed_domains: str = "github.com,pub.dev,producthunt.com,reddit.com"
     factory_secret_key: str = Field(default="")
     local_artifact_root: str = "workspaces"
     runtime_state_path: str = ".runtime/factory_state.json"

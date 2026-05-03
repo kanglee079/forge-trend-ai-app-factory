@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { Loader2, Play, RefreshCw, RotateCcw, Square } from "lucide-react";
 import { AgentEvent, ApiError, api, Artifact, FactoryBriefDetail, PolicyResult, Project, ProjectTask, QAResult, Worker } from "@/lib/api";
-import { formatDate } from "@/lib/utils";
+import { formatDate, isReadyWorker } from "@/lib/utils";
 import { Badge, Button, Card, Notice, StatusBadge, Table, Td, Th } from "@/components/ui";
 import { useFeedback } from "@/components/feedback";
 import { CopyButton, LogViewer } from "@/components/log-viewer";
@@ -70,9 +70,9 @@ export function ProjectDetailClient({ initialProject }: { initialProject: Projec
     if (running) {
       return;
     }
-    const activeLocalWorker = workers.find((worker) => worker.status === "online" && worker.has_codex && worker.has_flutter);
+    const activeLocalWorker = workers.find(isReadyWorker);
     if (!activeLocalWorker) {
-      setNotice({ tone: "warning", message: "No online local worker with Codex and Flutter is available. Start pnpm dev:worker, then run the pipeline again." });
+      setNotice({ tone: "warning", message: "No ready local worker is available. Deterministic workers need Flutter; Codex workers need Flutter plus codex login." });
       return;
     }
     if (project.workspace_path) {
@@ -177,7 +177,7 @@ export function ProjectDetailClient({ initialProject }: { initialProject: Projec
   }
 
   const prd = artifacts.find((item) => item.name === "prd.md");
-  const hasReadyWorker = workers.some((worker) => worker.status === "online" && worker.has_codex && worker.has_flutter);
+  const hasReadyWorker = workers.some(isReadyWorker);
   const steps = derivePipelineSteps({ project, events, qa, policy, artifacts });
   const latestFailure = getLatestFailure(events, qa);
   const currentStep = getCurrentStep(steps);
@@ -218,7 +218,7 @@ export function ProjectDetailClient({ initialProject }: { initialProject: Projec
         </Notice>
       ) : null}
       {!hasReadyWorker ? (
-        <Notice tone="warning">Local worker is offline or missing Codex/Flutter. Run codex login and pnpm dev:worker in a terminal before starting this project pipeline.</Notice>
+        <Notice tone="warning">Local worker is offline or missing required tools. Deterministic mode requires Flutter. Codex mode also requires Codex CLI and codex login.</Notice>
       ) : null}
       <div className="mb-5 flex flex-wrap gap-2">
         {tabs.map((tab) => (

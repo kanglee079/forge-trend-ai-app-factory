@@ -151,8 +151,60 @@ def doctor_check(id: str, label: str, ok: bool, detail: str, *, required: bool =
     return DoctorCheck(id=id, label=label, status="passed" if ok else "failed", detail=detail, required=required, guidance=guidance)
 
 
+def worker_mode_label() -> str:
+    return "Mode: Codex coding mode" if settings.worker_enable_codex else "Mode: Deterministic scaffold mode"
+
+
+def worker_mode_label_for_worker(worker: Worker) -> str:
+    return "Mode: Codex coding mode" if worker.worker_enable_codex else "Mode: Deterministic scaffold mode"
+
+
+def research_mode_label() -> str:
+    if settings.research_enable_web and settings.research_allowed_urls.strip():
+        return "Research: web evidence mode"
+    if settings.research_enable_web:
+        return "Research: deterministic fallback (no allowed URLs configured)"
+    return "Research: deterministic fallback"
+
+
+def worker_ready(worker: Worker, require_codex: bool | None = None) -> bool:
+    require_codex = settings.worker_enable_codex if require_codex is None else require_codex
+    if worker.status != "online" or not worker.has_flutter:
+        return False
+    if require_codex:
+        return worker.has_codex
+    return True
+
+
+def refresh_worker_statuses(db: Session, workers: list[Worker]) -> list[Worker]:
+    stale_before = datetime.now(UTC) - timedelta(seconds=settings.worker_stale_seconds)
+    changed = False
+    for worker in workers:
+        heartbeat = worker.last_heartbeat_at
+        if heartbeat and heartbeat.tzinfo is None:
+            heartbeat = heartbeat.replace(tzinfo=UTC)
+        if worker.status != "offline" and (heartbeat is None or heartbeat < stale_before):
+            worker.status = "offline"
+            worker.current_job_id = None
+            changed = True
+    if changed:
+        db.commit()
+    return workers
+
+
+def effective_worker_enable_codex(workers: list[Worker]) -> bool:
+    online_workers = [worker for worker in workers if worker.status == "online"]
+    if online_workers:
+        return any(worker.worker_enable_codex for worker in online_workers)
+    if workers and not any(worker.worker_enable_codex for worker in workers):
+        return False
+    return settings.worker_enable_codex
+
+
 def build_doctor_report(db: Session) -> DoctorResponse:
     checks: list[DoctorCheck] = []
+    workers = refresh_worker_statuses(db, list(db.scalars(select(Worker)).all()))
+    effective_codex_mode = effective_worker_enable_codex(workers)
     tool_checks = [
         ("git", "Git", ["git", "--version"], True, "Install Git and make sure it is available on PATH."),
         ("node", "Node.js", ["node", "--version"], True, "Install Node.js 20+."),
@@ -165,6 +217,8 @@ def build_doctor_report(db: Session) -> DoctorResponse:
         ("aider", "Aider", ["aider", "--version"], False, "Optional: install aider if you plan to use an aider adapter."),
     ]
     for id, label, command, required, guidance in tool_checks:
+        if id == "codex":
+            required = effective_codex_mode
         ok, detail = run_check(command)
         checks.append(doctor_check(id, label, ok, detail, required=required, guidance=None if ok else guidance))
 
@@ -185,8 +239,17 @@ def build_doctor_report(db: Session) -> DoctorResponse:
     checks.append(doctor_check("android_sdk_env", "Android SDK path", android_ok, android_detail, required=False, guidance="Set ANDROID_HOME or ANDROID_SDK_ROOT."))
     flutter_doctor_ok, flutter_doctor_detail = run_check(["flutter", "doctor", "-v"], timeout=20)
     checks.append(doctor_check("flutter_doctor", "Flutter doctor", flutter_doctor_ok, flutter_doctor_detail, required=False, guidance="Run flutter doctor -v and fix Android toolchain issues."))
-    codex_auth_ok, codex_auth_detail = run_check(["codex", "exec", "--help"], timeout=8)
-    checks.append(doctor_check("codex_auth_smoke", "Codex CLI smoke", codex_auth_ok, codex_auth_detail, required=False, guidance="Run codex login on this worker machine."))
+    codex_auth_ok, codex_auth_detail = run_check(["codex", "login", "status"], timeout=8)
+    checks.append(
+        doctor_check(
+            "codex_auth_smoke",
+            "Codex CLI auth",
+            codex_auth_ok,
+            codex_auth_detail,
+            required=effective_codex_mode,
+            guidance="Codex CLI is installed but not authenticated. Run: codex login",
+        )
+    )
 
     redis_ok, redis_detail = ping_host("127.0.0.1", 6379)
     checks.append(doctor_check("redis", "Redis", redis_ok, redis_detail, guidance="Run docker compose up -d redis."))
@@ -196,17 +259,50 @@ def build_doctor_report(db: Session) -> DoctorResponse:
     checks.append(doctor_check("minio", "MinIO", minio_ok, minio_detail, required=False, guidance="Run docker compose up -d minio."))
     checks.append(doctor_check("api", "API", True, "FastAPI responded to /doctor."))
     checks.append(doctor_check("api_route_freshness", "API route freshness", True, "/factory-briefs and /settings are registered in this API process."))
+    checks.append(
+        doctor_check(
+            "worker_mode",
+            "Worker coding mode",
+            True,
+            "Mode: Codex coding mode" if effective_codex_mode else "Mode: Deterministic scaffold mode",
+            required=False,
+            guidance="Set WORKER_ENABLE_CODEX=false for deterministic scaffold mode or true for Codex coding mode.",
+        )
+    )
+    checks.append(
+        doctor_check(
+            "research_mode",
+            "Research mode",
+            True,
+            research_mode_label(),
+            required=False,
+            guidance="Set RESEARCH_ENABLE_WEB=true and RESEARCH_ALLOWED_URLS for low-volume web evidence mode.",
+        )
+    )
 
-    workers = list(db.scalars(select(Worker)).all())
     online_workers = [worker for worker in workers if worker.status == "online"]
-    ready_workers = [worker for worker in online_workers if worker.has_flutter and worker.has_codex]
+    if effective_codex_mode:
+        ready_workers = [worker for worker in workers if worker_ready(worker, True)]
+    else:
+        ready_workers = [worker for worker in workers if worker_ready(worker, False)]
+    codex_enabled_workers = [worker for worker in workers if worker.worker_enable_codex]
+    deterministic_workers = [worker for worker in workers if not worker.worker_enable_codex]
+    doctor_requires_codex = effective_codex_mode
+    missing_parts: list[str] = []
+    if not online_workers:
+        missing_parts.append("no online worker heartbeat")
+    if online_workers and not any(worker.has_flutter for worker in online_workers):
+        missing_parts.append("Flutter")
+    if doctor_requires_codex and online_workers and not any(worker.has_codex for worker in online_workers if worker.worker_enable_codex):
+        missing_parts.append("Codex CLI")
+    required_capabilities = "Flutter and Codex" if doctor_requires_codex else "Flutter"
     checks.append(
         doctor_check(
             "worker_heartbeat",
             "Worker heartbeat",
             bool(online_workers),
             f"{len(online_workers)} online / {len(workers)} registered",
-            guidance="Run codex login, then pnpm dev:worker.",
+            guidance="Run pnpm dev:worker. In Codex mode, run codex login first.",
         )
     )
     checks.append(
@@ -214,15 +310,58 @@ def build_doctor_report(db: Session) -> DoctorResponse:
             "worker_pipeline_ready",
             "Worker pipeline ready",
             bool(ready_workers),
-            f"{len(ready_workers)} worker(s) report Flutter and Codex",
-            guidance="Install Flutter and Codex CLI on the worker machine, then restart pnpm dev:worker.",
+            (
+                f"{len(ready_workers)} worker(s) ready; required: {required_capabilities}. "
+                f"Effective mode: {'Mode: Codex coding mode' if effective_codex_mode else 'Mode: Deterministic scaffold mode'}. "
+                f"Workers reporting: {len(deterministic_workers)} deterministic, {len(codex_enabled_workers)} Codex. "
+                f"Missing: {', '.join(missing_parts) if missing_parts else 'none'}"
+            ),
+            guidance=(
+                "Install Flutter and restart pnpm dev:worker."
+                if not doctor_requires_codex
+                else "Install Flutter, install Codex CLI, run codex login, then restart pnpm dev:worker."
+            ),
         )
     )
+    for worker in workers:
+        missing: list[str] = []
+        if worker.status != "online":
+            missing.append(f"status={worker.status}")
+        if not worker.has_flutter:
+            missing.append("Flutter")
+        if effective_codex_mode and not worker.has_codex:
+            missing.append("Codex CLI")
+        checks.append(
+            doctor_check(
+                f"worker_{worker.id}_ready",
+                f"Worker ready: {worker.machine_name}",
+                worker_ready(worker, effective_codex_mode),
+                (
+                    f"Effective {'Mode: Codex coding mode' if effective_codex_mode else 'Mode: Deterministic scaffold mode'}; worker reports {worker_mode_label_for_worker(worker)}; "
+                    f"Flutter={worker.has_flutter}; Codex={worker.has_codex}; "
+                    f"Missing: {', '.join(missing) if missing else 'none'}"
+                ),
+                required=False,
+                guidance=(
+                    "Install Flutter and restart this deterministic worker."
+                    if not effective_codex_mode
+                    else "Install Flutter, install Codex CLI, run codex login, then restart this worker."
+                ),
+            )
+        )
 
     required_failed = any(check.required and check.status != "passed" for check in checks)
     warning_failed = any(check.status != "passed" for check in checks)
     status = "failed" if required_failed else "warning" if warning_failed else "passed"
-    return DoctorResponse(status=status, generated_at=datetime.now(UTC), checks=checks)
+    return DoctorResponse(
+        status=status,
+        generated_at=datetime.now(UTC),
+        checks=checks,
+        worker_enable_codex=effective_codex_mode,
+        worker_mode_label="Mode: Codex coding mode" if effective_codex_mode else "Mode: Deterministic scaffold mode",
+        research_enable_web=settings.research_enable_web,
+        research_mode_label=research_mode_label(),
+    )
 
 
 def get_or_create_factory_state(db: Session) -> FactoryState:
@@ -262,8 +401,16 @@ def create_notification(
     message: str,
     entity_type: str | None = None,
     entity_id: UUID | None = None,
+    metadata_json: dict | None = None,
 ) -> Notification:
-    notification = Notification(level=level, title=title, message=redact(message) or "", entity_type=entity_type, entity_id=entity_id)
+    notification = Notification(
+        level=level,
+        title=title,
+        message=redact(message) or "",
+        entity_type=entity_type,
+        entity_id=entity_id,
+        metadata_json=metadata_json or {},
+    )
     db.add(notification)
     return notification
 
@@ -286,6 +433,7 @@ def factory_brief_event(
         message=message,
         entity_type="factory_brief",
         entity_id=brief.id,
+        metadata_json=detail,
     )
 
 
@@ -395,8 +543,9 @@ def create_factory_brief(payload: FactoryBriefCreate, db: Session = Depends(get_
         db,
         item,
         level="info",
-        title="Factory brief created",
+        title="brief_created",
         message=f"{item.title} is ready to start.",
+        metadata_json={"step": "brief_created"},
     )
     db.commit()
     db.refresh(item)
@@ -426,8 +575,9 @@ def start_factory_brief(id: UUID, db: Session = Depends(get_db)) -> FactoryBrief
         db,
         brief,
         level="info",
-        title="Factory brief queued",
+        title="brief_queued",
         message=f"{brief.title} was queued for autonomous research and project creation.",
+        metadata_json={"step": "brief_queued"},
     )
     db.commit()
     return FactoryBriefRunResponse(factory_brief_id=brief.id, status=brief.status, queue=queue)
@@ -533,8 +683,9 @@ def finalize_factory_brief(id: UUID, payload: FactoryBriefFinalizeRequest, db: S
                 db,
                 brief,
                 level="info",
-                title="Existing project queued",
+                title="pipeline_queued",
                 message=f"{project.name} was queued again from this factory brief.",
+                metadata_json={"step": "pipeline_queued", "project_id": str(project.id), "queue": queue},
             )
         db.commit()
         return PipelineRunResponse(project_id=project.id, status=project.status, queue=queue)
@@ -549,6 +700,9 @@ def finalize_factory_brief(id: UUID, payload: FactoryBriefFinalizeRequest, db: S
             "factory_brief_id": str(brief.id),
             "candidate_id": str(candidate.id),
             "core_features": candidate.core_features,
+            "iap_plan_json": candidate.iap_plan_json,
+            "subscription_plan_json": candidate.subscription_plan_json,
+            "backend_plan_json": candidate.backend_plan_json,
             "scores": {
                 "demand": candidate.demand_score,
                 "pain": candidate.pain_score,
@@ -620,9 +774,17 @@ def finalize_factory_brief(id: UUID, payload: FactoryBriefFinalizeRequest, db: S
         db,
         brief,
         level="success",
-        title="Factory project created",
+        title="project_created",
         message=f"{project.name} was created and linked to this brief.",
-        metadata_json={"project_id": str(project.id), "candidate_id": str(candidate.id)},
+        metadata_json={"step": "project_created", "project_id": str(project.id), "candidate_id": str(candidate.id)},
+    )
+    factory_brief_event(
+        db,
+        brief,
+        level="info",
+        title="project_tasks_created",
+        message=f"{len(task_specs)} project task(s) were created for the factory pipeline.",
+        metadata_json={"step": "project_tasks_created", "project_id": str(project.id), "task_count": len(task_specs)},
     )
     create_notification(
         db,
@@ -640,9 +802,9 @@ def finalize_factory_brief(id: UUID, payload: FactoryBriefFinalizeRequest, db: S
             db,
             brief,
             level="info",
-            title="Pipeline queued",
+            title="pipeline_queued",
             message=f"{project.name} was queued on {queue}.",
-            metadata_json={"project_id": str(project.id), "queue": queue},
+            metadata_json={"step": "pipeline_queued", "project_id": str(project.id), "queue": queue},
         )
     db.commit()
     return PipelineRunResponse(project_id=project.id, status=project.status, queue=queue)
@@ -756,19 +918,7 @@ def worker_heartbeat(id: UUID, payload: WorkerHeartbeat, db: Session = Depends(g
 @app.get("/workers", response_model=list[WorkerRead])
 def list_workers(db: Session = Depends(get_db)) -> list[Worker]:
     workers = list(db.scalars(select(Worker).order_by(desc(Worker.last_heartbeat_at))).all())
-    stale_before = datetime.now(UTC) - timedelta(seconds=settings.worker_stale_seconds)
-    changed = False
-    for worker in workers:
-        heartbeat = worker.last_heartbeat_at
-        if heartbeat and heartbeat.tzinfo is None:
-            heartbeat = heartbeat.replace(tzinfo=UTC)
-        if worker.status != "offline" and (heartbeat is None or heartbeat < stale_before):
-            worker.status = "offline"
-            worker.current_job_id = None
-            changed = True
-    if changed:
-        db.commit()
-    return workers
+    return refresh_worker_statuses(db, workers)
 
 
 @app.post("/ideas", response_model=IdeaRead)

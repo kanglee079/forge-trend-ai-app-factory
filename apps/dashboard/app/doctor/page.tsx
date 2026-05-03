@@ -67,6 +67,7 @@ export default function DoctorPage() {
               <div className="mt-2 text-sm">{formatDate(doctor.generated_at)}</div>
             </Card>
           </div>
+          <Notice tone="neutral">{doctor.worker_mode_label}. {doctor.research_mode_label}</Notice>
 
           <section className="mb-6">
             <h2 className="mb-3 text-base font-semibold">Required</h2>

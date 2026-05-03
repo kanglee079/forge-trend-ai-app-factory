@@ -7,7 +7,7 @@ from daemon.api import FactoryApi
 from daemon.config import settings
 from daemon.cost_guard import check_cost_limit
 from daemon.provider_adapters import ADAPTERS, ProviderUnavailable, run_codex_cli
-from daemon.research import DeterministicResearchProvider, ResearchBundle, WebResearchProvider
+from daemon.research.providers import build_research_bundle
 from daemon.safety import run_safe
 
 
@@ -91,255 +91,13 @@ def git_head(ctx: PipelineContext) -> str | None:
     return None
 
 
-def first_sentence(value: str, fallback: str) -> str:
-    normalized = " ".join(value.strip().split())
-    if not normalized:
-        return fallback
-    for marker in [". ", "! ", "? "]:
-        if marker in normalized:
-            return normalized.split(marker, 1)[0].strip()
-    return normalized[:180]
-
-
 def compact_list(values: list[Any], fallback: list[str]) -> list[str]:
     items = [str(item).strip() for item in values if str(item).strip()]
     return items[:6] or fallback
 
 
-def derive_focus_terms(brief: dict[str, Any]) -> list[str]:
-    raw = f"{brief.get('title', '')} {brief.get('raw_prompt', '')} {brief.get('target_category') or ''}".lower()
-    stopwords = {
-        "the",
-        "and",
-        "for",
-        "with",
-        "that",
-        "this",
-        "app",
-        "build",
-        "make",
-        "create",
-        "best",
-        "trend",
-        "search",
-        "auto",
-        "mobile",
-        "user",
-        "users",
-        "have",
-        "from",
-        "into",
-        "your",
-        "their",
-        "mvp",
-    }
-    terms: list[str] = []
-    for token in "".join(char if char.isalnum() else " " for char in raw).split():
-        if len(token) < 3 or token in stopwords:
-            continue
-        if token not in terms:
-            terms.append(token)
-    return terms[:8] or ["focused", "workflow", "assistant"]
-
-
-def monetization_text(brief: dict[str, Any]) -> str:
-    modes: list[str] = []
-    if brief.get("iap_enabled"):
-        modes.append("one-time in-app purchases for advanced packs or exports")
-    if brief.get("subscription_enabled"):
-        modes.append("subscription for ongoing coaching, sync, or premium automation")
-    if brief.get("ads_enabled"):
-        modes.append("careful ad placement after the core workflow is proven")
-    if brief.get("monetization_mode") and brief.get("monetization_mode") != "none":
-        modes.append(str(brief["monetization_mode"]).replace("_", " "))
-    return "; ".join(modes) if modes else "Validate retention first, then add freemium upgrade points after human review."
-
-
-def deterministic_findings(brief: dict[str, Any]) -> list[dict[str, Any]]:
-    terms = derive_focus_terms(brief)
-    category = brief.get("target_category") or terms[0].title()
-    prompt_summary = first_sentence(str(brief.get("raw_prompt") or ""), "User wants the factory to identify a strong app opportunity.")
-    return [
-        {
-            "source": "brief_intent",
-            "title": f"{category} intent signal",
-            "summary": prompt_summary,
-            "category": category,
-            "keywords": terms,
-            "pain_points": [
-                "Users need a clearer next action instead of another generic tracker.",
-                "Existing tools often require too much setup before value appears.",
-                "Trust, privacy, and originality need to be visible in the first session.",
-            ],
-            "competitor_gaps": [
-                "Broad apps optimize for feature count instead of one repeated workflow.",
-                "Onboarding rarely adapts to the user's first concrete goal.",
-                "Monetization is often bolted on before the free value loop is proven.",
-            ],
-            "evidence_json": {"method": "deterministic_brief_analysis", "terms": terms},
-            "confidence_score": 72,
-        },
-        {
-            "source": "product_heuristic",
-            "title": "MVP feasibility pattern",
-            "summary": "A compact mobile app with onboarding, dashboard, guided actions, and settings can be built and tested by the current pipeline.",
-            "category": category,
-            "keywords": [*terms[:4], "onboarding", "dashboard", "qa"],
-            "pain_points": [
-                "Complex backend dependencies increase first-build failure risk.",
-                "Thin scaffolds feel unfinished if the home screen has no state model.",
-            ],
-            "competitor_gaps": [
-                "Many starter apps lack release policy checks.",
-                "Most generated prototypes do not expose QA status and artifacts to the operator.",
-            ],
-            "evidence_json": {"pipeline_fit": "flutter_template_plus_codex_pass", "target_platforms": brief.get("target_platforms", ["android"])},
-            "confidence_score": 68,
-        },
-        {
-            "source": "monetization_fit",
-            "title": "Revenue and policy fit",
-            "summary": monetization_text(brief),
-            "category": category,
-            "keywords": [*terms[:3], "pricing", "policy", "retention"],
-            "pain_points": [
-                "Paid features need a clear value boundary.",
-                "Subscription claims need careful copy and human review.",
-            ],
-            "competitor_gaps": [
-                "Competitors often hide pricing until late in onboarding.",
-                "Policy-sensitive domains need transparent disclaimers.",
-            ],
-            "evidence_json": {
-                "iap_enabled": brief.get("iap_enabled", False),
-                "subscription_enabled": brief.get("subscription_enabled", False),
-                "ads_enabled": brief.get("ads_enabled", False),
-            },
-            "confidence_score": 64,
-        },
-    ]
-
-
-def deterministic_candidates(brief: dict[str, Any], findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    terms = derive_focus_terms(brief)
-    category = str(brief.get("target_category") or terms[0].title())
-    title_seed = first_sentence(str(brief.get("title") or ""), f"{category} Companion")
-    base_title = title_seed if len(title_seed) <= 54 else title_seed[:54].strip()
-    raw_prompt = str(brief.get("raw_prompt") or brief.get("title") or "focused workflow")
-    target_country = brief.get("target_country", "US")
-    language = brief.get("target_language", "en")
-    backend_mode = brief.get("backend_mode", "none")
-    score_bonus = 8 if brief.get("subscription_enabled") or brief.get("iap_enabled") else 0
-    backend_penalty = 8 if backend_mode not in {"none", "local"} else 0
-    return [
-        {
-            "title": f"{base_title} Studio",
-            "description": f"A focused {category.lower()} app that turns the user's first goal into a guided daily workflow with visible progress and privacy-aware defaults.",
-            "target_user": f"Mobile users in {target_country} who want a practical {category.lower()} workflow in {language}.",
-            "problem": first_sentence(raw_prompt, "The user needs a simpler way to turn intent into repeated action."),
-            "unique_angle": "Start with one concrete user goal, then generate only the next useful action instead of a cluttered feature hub.",
-            "core_features": [
-                "Goal capture onboarding",
-                "Daily action dashboard",
-                "Progress and confidence status cards",
-                "Local-first settings and export placeholder",
-                "Human-review release checklist",
-            ],
-            "monetization_plan": monetization_text(brief),
-            "iap_plan_json": {"enabled": bool(brief.get("iap_enabled")), "items": ["Advanced templates", "Export packs"]},
-            "subscription_plan_json": {"enabled": bool(brief.get("subscription_enabled")), "tiers": ["Pro monthly", "Pro annual"]},
-            "backend_plan_json": {"mode": backend_mode, "first_release": "local-first" if backend_mode == "none" else backend_mode},
-            "opportunity_score": min(92, 74 + score_bonus - backend_penalty),
-            "demand_score": 76,
-            "pain_score": 78,
-            "monetization_score": 72 + score_bonus,
-            "build_feasibility_score": 84 - backend_penalty,
-            "differentiation_score": 73,
-            "policy_risk_score": 22,
-            "originality_score": 81,
-            "status": "proposed",
-        },
-        {
-            "title": f"{category} Sprint Coach",
-            "description": "A lightweight coach that creates short action sprints, reflection prompts, and a clean timeline for users who abandon heavier apps.",
-            "target_user": "Users who already tried generic trackers but need a narrower guided routine.",
-            "problem": "Generic productivity and learning tools create planning overhead before the user gets a useful action.",
-            "unique_angle": "Compress planning into one short sprint loop: choose goal, do next action, reflect, repeat.",
-            "core_features": [
-                "Sprint setup",
-                "Next-action queue",
-                "Reflection log",
-                "Progress streaks",
-                "Privacy and export settings",
-            ],
-            "monetization_plan": monetization_text(brief),
-            "iap_plan_json": {"enabled": bool(brief.get("iap_enabled")), "items": ["Sprint packs"]},
-            "subscription_plan_json": {"enabled": bool(brief.get("subscription_enabled")), "tiers": ["Coach Plus"]},
-            "backend_plan_json": {"mode": backend_mode},
-            "opportunity_score": min(88, 69 + score_bonus),
-            "demand_score": 72,
-            "pain_score": 75,
-            "monetization_score": 68 + score_bonus,
-            "build_feasibility_score": 88 - backend_penalty,
-            "differentiation_score": 68,
-            "policy_risk_score": 18,
-            "originality_score": 76,
-            "status": "proposed",
-        },
-        {
-            "title": f"{category} Field Notes",
-            "description": "A note-to-action app that helps users capture friction, classify recurring pain points, and turn them into repeatable personal workflows.",
-            "target_user": "Operators, learners, and creators who need structured field notes rather than a blank notes app.",
-            "problem": "Useful observations get lost because capture tools do not convert notes into an executable plan.",
-            "unique_angle": "Mine the user's own notes for recurring patterns, then suggest the next experiment.",
-            "core_features": [
-                "Structured capture",
-                "Pattern tags",
-                "Experiment planner",
-                "Evidence timeline",
-                "Review dashboard",
-            ],
-            "monetization_plan": "Best kept free-first until note retention is validated; add export packs later.",
-            "iap_plan_json": {"enabled": bool(brief.get("iap_enabled")), "items": ["Export templates"]},
-            "subscription_plan_json": {"enabled": False},
-            "backend_plan_json": {"mode": "none"},
-            "opportunity_score": 66,
-            "demand_score": 65,
-            "pain_score": 70,
-            "monetization_score": 56,
-            "build_feasibility_score": 90,
-            "differentiation_score": 70,
-            "policy_risk_score": 15,
-            "originality_score": 78,
-            "status": "proposed",
-        },
-    ]
-
-
-def parse_csv(value: str) -> list[str]:
-    return [item.strip() for item in value.split(",") if item.strip()]
-
-
-def build_research_bundle(brief: dict[str, Any]) -> ResearchBundle:
-    deterministic = DeterministicResearchProvider(deterministic_findings, deterministic_candidates).run(brief)
-    urls = parse_csv(settings.research_allowed_urls)
-    if brief.get("mode") != "auto_trend" or not urls:
-        return deterministic
-
-    web = WebResearchProvider(
-        urls,
-        allowed_domains=parse_csv(settings.research_allowed_domains),
-        timeout_seconds=settings.research_web_timeout_seconds,
-        delay_seconds=settings.research_web_delay_seconds,
-    ).run(brief)
-    findings = [*web.findings, *deterministic.findings]
-    candidates = deterministic.candidates
-    evidence = [*web.evidence, *deterministic.evidence]
-    for finding in findings:
-        evidence_json = dict(finding.get("evidence_json") or {})
-        evidence_json.setdefault("research_evidence", evidence[:8])
-        finding["evidence_json"] = evidence_json
-    return ResearchBundle(findings=findings, candidates=candidates, evidence=evidence)
+def dart_string(value: Any) -> str:
+    return str(value).replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ")
 
 
 def write_factory_brief_report(brief: dict[str, Any], findings: list[dict[str, Any]], candidates: list[dict[str, Any]]) -> None:
@@ -380,61 +138,207 @@ def write_factory_brief_report(brief: dict[str, Any], findings: list[dict[str, A
     write_text(report_dir / f"{brief['id']}.md", "\n".join(lines))
 
 
+def summarize_artifacts(artifacts: list[dict[str, Any]]) -> str:
+    if not artifacts:
+        return "- None recorded yet"
+    return "\n".join(f"- {item.get('kind')}: {item.get('name')} ({item.get('path')})" for item in artifacts)
+
+
+def write_factory_run_report(ctx: PipelineContext, qa_output: dict[str, Any] | None, policy_output: dict[str, Any] | None, final_status: str) -> None:
+    brief_id = next(
+        (
+            str(task.get("input_json", {}).get("factory_brief_id"))
+            for task in ctx.tasks_by_agent.values()
+            if task.get("input_json", {}).get("factory_brief_id")
+        ),
+        "",
+    )
+    candidate_id = next(
+        (
+            str(task.get("input_json", {}).get("candidate_id"))
+            for task in ctx.tasks_by_agent.values()
+            if task.get("input_json", {}).get("candidate_id")
+        ),
+        "",
+    )
+    brief = ctx.api.get_factory_brief(brief_id) if brief_id else None
+    events = ctx.api.list_project_events(ctx.project_id)
+    tasks = ctx.api.list_project_tasks(ctx.project_id)
+    qa = ctx.api.list_project_qa(ctx.project_id)
+    policy = ctx.api.list_project_policy(ctx.project_id)
+    artifacts = ctx.api.list_project_artifacts(ctx.project_id)
+    selected_candidate = None
+    if brief:
+        selected_candidate = next((item for item in brief.get("candidates", []) if item.get("id") == candidate_id), None)
+        selected_candidate = selected_candidate or next((item for item in brief.get("candidates", []) if item.get("status") == "selected"), None)
+    code_events = [event for event in events if event.get("step") == "code_agent"]
+    codex_event = next((event for event in code_events if event.get("metadata_json", {}).get("provider") == "codex_cli"), None)
+    code_task = next((task for task in tasks if task.get("agent_name") == "code_agent"), None)
+    code_provider = (code_task or {}).get("output_json", {}).get("code_provider", {})
+    report_path = ctx.artifacts_dir / "factory_run_report.md"
+    lines = [
+        f"# Factory Run Report: {ctx.project['name']}",
+        "",
+        "## Brief",
+        f"- Brief ID: {brief_id or 'not linked'}",
+        f"- Title: {(brief or {}).get('title', ctx.project['name'])}",
+        f"- Mode: {(brief or {}).get('mode', 'manual')}",
+        f"- Prompt: {(brief or {}).get('raw_prompt', (ctx.idea or {}).get('description', ''))}",
+        "",
+        "## Selected Candidate",
+        f"- Candidate ID: {candidate_id or 'unknown'}",
+        f"- Title: {(selected_candidate or {}).get('title', ctx.project['name'])}",
+        f"- Score: {(selected_candidate or {}).get('opportunity_score', 'unknown')}",
+        f"- Why selected: Highest opportunity score after demand, pain, monetization, feasibility, originality, and policy-risk scoring.",
+        "",
+        "## Research Findings",
+    ]
+    for finding in (brief or {}).get("findings", []):
+        evidence = finding.get("evidence_json") or {}
+        source = evidence.get("source_url") or evidence.get("provider") or finding.get("source")
+        lines.append(f"- {finding.get('title')}: {finding.get('summary')} Source: {source}")
+    if not (brief or {}).get("findings"):
+        lines.append("- No linked findings were returned by the API.")
+    lines.extend(["", "## Tasks"])
+    for task in tasks:
+        provider = ""
+        if task.get("agent_name") == "code_agent":
+            provider = f" provider={task.get('output_json', {}).get('code_provider', {}).get('provider', 'unknown')}"
+        lines.append(f"- {task.get('status')} {task.get('agent_name')}: {task.get('title')}{provider}")
+    lines.extend(
+        [
+            "",
+            "## Codex Provider Status",
+            f"- Worker mode: {'Codex coding mode' if settings.worker_enable_codex else 'Deterministic scaffold mode'}",
+            f"- Code provider result: {json.dumps(code_provider, ensure_ascii=True)}",
+            f"- Codex proof event: {'yes' if codex_event else 'no'}",
+            "",
+            "## QA Result",
+            f"- Summary: {json.dumps(qa_output or {}, ensure_ascii=True)[:2000]}",
+        ]
+    )
+    for item in qa:
+        lines.append(f"- {item.get('status')} exit={item.get('exit_code')} {item.get('command')}")
+    lines.extend(
+        [
+            "",
+            "## Policy Result",
+            f"- Summary: {json.dumps(policy_output or {}, ensure_ascii=True)[:2000]}",
+        ]
+    )
+    for item in policy:
+        lines.append(f"- passed={item.get('passed')} risk={item.get('risk')} issues={'; '.join(item.get('issues') or [])}")
+    lines.extend(
+        [
+            "",
+            "## Artifacts",
+            summarize_artifacts(artifacts),
+            "",
+            "## Final Status",
+            final_status,
+            "",
+            "## Next Recommended Action",
+            "Open the generated Flutter workspace, review QA/policy output, and keep human approval in the loop before any production release.",
+        ]
+    )
+    write_text(report_path, "\n".join(lines))
+    ctx.api.artifact(ctx.project_id, "document", "factory_run_report.md", str(report_path), {"brief_id": brief_id, "final_status": final_status})
+
+
 def run_factory_brief(api: FactoryApi, brief_id: str) -> None:
     brief = api.get_factory_brief(brief_id)
-    api.factory_brief_event(brief_id, "Worker picked brief", "A worker picked up this factory brief.", metadata_json={"mode": brief.get("mode")})
-    api.set_factory_brief_status(brief_id, "researching")
-    api.factory_brief_event(brief_id, "Research started", "Research provider pass started.")
-    bundle = build_research_bundle(brief)
-    findings: list[dict[str, Any]] = []
-    for payload in bundle.findings:
-        findings.append(api.research_finding(brief_id, payload))
-    api.factory_brief_event(
-        brief_id,
-        "Findings created",
-        f"{len(findings)} research finding(s) were stored.",
-        metadata_json={"finding_count": len(findings), "evidence": bundle.evidence[:6]},
-    )
+    try:
+        api.factory_brief_event(
+            brief_id,
+            "worker_picked_brief",
+            "A worker picked up this factory brief.",
+            metadata_json={"step": "worker_picked_brief", "mode": brief.get("mode")},
+        )
+        api.set_factory_brief_status(brief_id, "researching")
+        api.factory_brief_event(
+            brief_id,
+            "research_started",
+            "Research provider pass started.",
+            metadata_json={"step": "research_started", "research_enable_web": settings.research_enable_web},
+        )
+        bundle = build_research_bundle(brief)
+        provider_names = sorted({str(item.get("provider") or "unknown") for item in bundle.evidence})
+        fallback = any(bool(item.get("fallback")) for item in bundle.evidence)
+        api.factory_brief_event(
+            brief_id,
+            "research_provider_used",
+            f"Research provider(s): {', '.join(provider_names) or 'deterministic_provider'}; fallback={fallback}.",
+            metadata_json={"step": "research_provider_used", "providers": provider_names, "fallback": fallback, "evidence": bundle.evidence[:6]},
+        )
+        findings: list[dict[str, Any]] = []
+        for payload in bundle.findings:
+            findings.append(api.research_finding(brief_id, payload))
+        api.factory_brief_event(
+            brief_id,
+            "findings_created",
+            f"{len(findings)} research finding(s) were stored.",
+            metadata_json={"step": "findings_created", "finding_count": len(findings), "evidence": bundle.evidence[:6]},
+        )
 
-    api.set_factory_brief_status(brief_id, "scoring_candidates")
-    api.factory_brief_event(brief_id, "Candidate scoring started", "Opportunity candidates are being scored.")
-    candidates: list[dict[str, Any]] = []
-    for payload in bundle.candidates:
-        candidates.append(api.opportunity_candidate(brief_id, payload))
-    candidates.sort(key=lambda item: int(item.get("opportunity_score") or 0), reverse=True)
-    if not candidates:
-        raise RuntimeError("Factory brief produced no candidates")
-    api.factory_brief_event(
-        brief_id,
-        "Candidates created",
-        f"{len(candidates)} opportunity candidate(s) were scored.",
-        metadata_json={"candidate_count": len(candidates), "top_score": candidates[0].get("opportunity_score")},
-    )
+        api.set_factory_brief_status(brief_id, "scoring_candidates")
+        api.factory_brief_event(
+            brief_id,
+            "candidate_scoring_started",
+            "Opportunity candidates are being scored.",
+            metadata_json={"step": "candidate_scoring_started"},
+        )
+        candidates: list[dict[str, Any]] = []
+        for payload in bundle.candidates:
+            candidates.append(api.opportunity_candidate(brief_id, payload))
+        candidates.sort(key=lambda item: int(item.get("opportunity_score") or 0), reverse=True)
+        if not candidates:
+            raise RuntimeError("Factory brief produced no candidates")
+        api.factory_brief_event(
+            brief_id,
+            "candidates_created",
+            f"{len(candidates)} opportunity candidate(s) were scored.",
+            metadata_json={"step": "candidates_created", "candidate_count": len(candidates), "top_score": candidates[0].get("opportunity_score")},
+        )
 
-    write_factory_brief_report(brief, findings, candidates)
-    selected = candidates[0]
-    api.set_factory_brief_status(brief_id, "selecting_candidate")
-    api.factory_brief_event(
-        brief_id,
-        "Candidate selected",
-        f"{selected['title']} selected with score {selected.get('opportunity_score')}.",
-        metadata_json={"candidate_id": selected["id"], "opportunity_score": selected.get("opportunity_score")},
-    )
-    response = api.finalize_factory_brief(brief_id, selected["id"], queue_pipeline=True)
-    api.set_factory_brief_status(brief_id, "project_queued")
-    project_id = response["project_id"]
-    api.factory_brief_event(
-        brief_id,
-        "Project pipeline queued",
-        f"Project {project_id} was queued on {response.get('queue')}.",
-        metadata_json={"project_id": project_id, "queue": response.get("queue")},
-    )
-    api.event(
-        project_id,
-        "factory_brief",
-        f"Autonomous factory selected candidate: {selected['title']}",
-        metadata_json={"factory_brief_id": brief_id, "candidate_id": selected["id"], "opportunity_score": selected.get("opportunity_score")},
-    )
+        write_factory_brief_report(brief, findings, candidates)
+        selected = candidates[0]
+        api.set_factory_brief_status(brief_id, "selecting_candidate")
+        api.factory_brief_event(
+            brief_id,
+            "candidate_selected",
+            f"{selected['title']} selected with score {selected.get('opportunity_score')}.",
+            metadata_json={"step": "candidate_selected", "candidate_id": selected["id"], "opportunity_score": selected.get("opportunity_score")},
+        )
+        response = api.finalize_factory_brief(brief_id, selected["id"], queue_pipeline=True)
+        api.set_factory_brief_status(brief_id, "project_queued")
+        project_id = response["project_id"]
+        api.factory_brief_event(
+            brief_id,
+            "pipeline_queued",
+            f"Project {project_id} was queued on {response.get('queue')}.",
+            metadata_json={"step": "pipeline_queued", "project_id": project_id, "queue": response.get("queue")},
+        )
+        api.event(
+            project_id,
+            "factory_brief",
+            f"Autonomous factory selected candidate: {selected['title']}",
+            metadata_json={"factory_brief_id": brief_id, "candidate_id": selected["id"], "opportunity_score": selected.get("opportunity_score")},
+        )
+    except Exception as exc:
+        api.set_factory_brief_status(brief_id, "failed")
+        api.factory_brief_event(
+            brief_id,
+            "brief_failed",
+            f"Failed at: factory_brief\nReason: {exc}\nNext action: Check worker logs, doctor output, and factory configuration, then start a new brief or retry after fixing the issue.",
+            level="error",
+            metadata_json={
+                "step": "brief_failed",
+                "failed_at": "factory_brief",
+                "reason": str(exc),
+                "next_action": "Check worker logs, doctor output, and factory configuration, then retry.",
+            },
+        )
+        raise
 
 
 def ensure_not_stopped(ctx: PipelineContext) -> None:
@@ -546,13 +450,22 @@ Existing solutions are often broad, cluttered, or weak on guided onboarding and 
 ## MVP features
 - Guided onboarding for the core workflow.
 - Home dashboard with next best action.
+- Core feature screen with local sample data.
+- Progress/status cards for the user's current state.
+- Loading, empty, error, and success feedback states.
 - Settings with privacy and export placeholders.
+- Privacy/about screen.
+- Subscription or IAP placeholder when configured.
 - Local-first sample data and no hardcoded secrets.
 
 ## Screens
 - Onboarding
 - Home
+- Core feature
+- Progress/status
 - Settings
+- Privacy/about
+- Paywall placeholder when configured
 
 ## Data model
 - UserPreference
@@ -637,28 +550,116 @@ def code_agent(ctx: PipelineContext, iteration: int = 0, qa_error: str | None = 
         raise RuntimeError(decision.reason)
     created_app = False
     if not ctx.app_dir.exists():
-        ignore = shutil.ignore_patterns(".dart_tool", "build", ".idea", "*.iml", "android/local.properties")
+        ignore = shutil.ignore_patterns(".dart_tool", "build", ".idea", ".gradle", "*.iml", "android/local.properties")
         shutil.copytree(TEMPLATE_ROOT, ctx.app_dir, ignore=ignore)
         created_app = True
         ctx.event("code_agent", "Flutter template copied", metadata_json={"template": str(TEMPLATE_ROOT), "app_dir": str(ctx.app_dir)})
     else:
         ctx.event("code_agent", "Flutter app already exists; preparing code pass", metadata_json={"iteration": iteration})
 
-    if created_app or not (ctx.app_dir / "lib" / "core" / "app_content.dart").exists():
-        title = ctx.project["name"]
-        about = ctx.idea["description"] if ctx.idea else "A focused original mobile app generated by ForgeTrend."
-        constants = f"""class AppContent {{
+    title = ctx.project["name"]
+    about = ctx.idea["description"] if ctx.idea else "A focused original mobile app generated by ForgeTrend."
+    evidence = ctx.idea.get("evidence_json", {}) if ctx.idea else {}
+    core_features = compact_list(evidence.get("core_features", []), ["Guided first session", "Daily progress dashboard", "Local sample data"])
+    has_paywall = any(
+        bool(value)
+        for value in [
+            (evidence.get("subscription_plan_json") or {}).get("enabled") if isinstance(evidence.get("subscription_plan_json"), dict) else False,
+            (evidence.get("iap_plan_json") or {}).get("enabled") if isinstance(evidence.get("iap_plan_json"), dict) else False,
+            "subscription" in about.lower(),
+            "iap" in about.lower(),
+        ]
+    )
+    dart_features = ",\n".join(f"    '{dart_string(feature)}'" for feature in core_features)
+    title_literal = dart_string(title)
+    about_literal = dart_string(about)[:900]
+    constants = f"""class AppContent {{
   const AppContent._();
 
-  static const String appName = '{title.replace("'", "\\'")}';
+  static const String appName = '{title_literal}';
   static const String tagline = 'Original workflow, clear next action.';
-  static const String idea = '{about.replace("'", "\\'").replace("\n", " ")}';
+  static const String idea = '{about_literal}';
+  static const bool subscriptionEnabled = {'true' if has_paywall else 'false'};
+  static const List<String> coreFeatures = [
+{dart_features}
+  ];
 }}
 """
-        write_text(ctx.app_dir / "lib" / "core" / "app_content.dart", constants)
+    write_text(ctx.app_dir / "lib" / "core" / "app_content.dart", constants)
 
-    if created_app or not (ctx.app_dir / "test" / "widget_test.dart").exists():
-        widget_test = """import 'package:flutter_test/flutter_test.dart';
+    if has_paywall:
+        purchase_service = """class PurchaseService {
+  const PurchaseService();
+
+  bool get productionBillingEnabled => false;
+
+  Future<String> startPlaceholderPurchase(String planName) async {
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    return 'Purchase placeholder for $planName. Add reviewed store billing before release.';
+  }
+}
+"""
+        paywall_screen = """import 'package:flutter/material.dart';
+
+import '../../core/app_content.dart';
+import 'purchase_service.dart';
+
+class PaywallScreen extends StatefulWidget {
+  const PaywallScreen({super.key});
+
+  @override
+  State<PaywallScreen> createState() => _PaywallScreenState();
+}
+
+class _PaywallScreenState extends State<PaywallScreen> {
+  final _purchaseService = const PurchaseService();
+  String? _message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Premium')),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Text('Premium placeholder', style: Theme.of(context).textTheme.headlineSmall),
+          const SizedBox(height: 12),
+          Text('${AppContent.appName} can reserve premium flows without enabling production billing.'),
+          const SizedBox(height: 12),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.workspace_premium_outlined),
+              title: const Text('Pro study plan'),
+              subtitle: const Text('Human-reviewed billing is required before store release.'),
+              trailing: FilledButton(
+                onPressed: () async {
+                  final message = await _purchaseService.startPlaceholderPurchase('Pro study plan');
+                  if (mounted) setState(() => _message = message);
+                },
+                child: const Text('Preview'),
+              ),
+            ),
+          ),
+          if (_message != null) ...[
+            const SizedBox(height: 12),
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.check_circle_outline),
+                title: const Text('Success feedback'),
+                subtitle: Text(_message!),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+"""
+        write_text(ctx.app_dir / "lib" / "features" / "paywall" / "purchase_service.dart", purchase_service)
+        write_text(ctx.app_dir / "lib" / "features" / "paywall" / "paywall_screen.dart", paywall_screen)
+
+    widget_test = """import 'package:flutter_test/flutter_test.dart';
 import 'package:forge_trend_app_template/app.dart';
 import 'package:forge_trend_app_template/core/app_content.dart';
 
@@ -674,10 +675,34 @@ void main() {
 
     expect(find.text('Today'), findsOneWidget);
     expect(find.text('Next action'), findsOneWidget);
+    expect(find.text('Core flow'), findsOneWidget);
+  });
+
+  testWidgets('paywall visible when subscription enabled', (tester) async {
+    await tester.pumpWidget(const ForgeTrendApp());
+
+    await tester.tap(find.text('Start'));
+    await tester.pumpAndSettle();
+
+    if (AppContent.subscriptionEnabled) {
+      expect(find.text('Premium'), findsOneWidget);
+    }
+  });
+
+  testWidgets('settings and privacy screen exists', (tester) async {
+    await tester.pumpWidget(const ForgeTrendApp());
+
+    await tester.tap(find.text('Start'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Settings'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Settings'), findsWidgets);
+    expect(find.text('Privacy policy'), findsOneWidget);
   });
 }
 """
-        write_text(ctx.app_dir / "test" / "widget_test.dart", widget_test)
+    write_text(ctx.app_dir / "test" / "widget_test.dart", widget_test)
 
     if created_app or not (ctx.app_dir / "PRIVACY_POLICY.md").exists():
         privacy = f"""# Privacy Policy Placeholder
@@ -694,7 +719,13 @@ Replace this placeholder with a reviewed policy before store submission.
 
     git_commit(ctx, f"Code agent iteration {iteration}")
     provider_result: dict[str, Any] = {"provider": "deterministic", "skipped_reason": None}
-    if settings.worker_code_provider == "codex_cli":
+    if not settings.worker_enable_codex:
+        ctx.event(
+            "code_agent",
+            "Deterministic scaffold mode active; Codex CLI was not required",
+            metadata_json={"provider": "deterministic", "worker_enable_codex": False, "iteration": iteration},
+        )
+    elif settings.worker_code_provider == "codex_cli":
         try:
             provider_result = run_codex_code_pass(ctx, iteration, qa_error)
         except ProviderUnavailable as exc:
@@ -703,8 +734,10 @@ Replace this placeholder with a reviewed policy before store submission.
                 "code_agent",
                 "Codex CLI unavailable; kept deterministic scaffold",
                 level="warning",
-                metadata_json={"reason": str(exc), "iteration": iteration},
+                metadata_json={"provider": "codex_cli", "reason": str(exc), "iteration": iteration},
             )
+            if settings.worker_enable_codex:
+                raise
         except Exception as exc:
             provider_result = {"provider": "codex_cli", "error": str(exc)}
             ctx.event(
@@ -712,8 +745,10 @@ Replace this placeholder with a reviewed policy before store submission.
                 "Codex CLI pass failed or timed out; continuing to QA with current workspace",
                 level="warning",
                 stderr=str(exc),
-                metadata_json={"iteration": iteration},
+                metadata_json={"provider": "codex_cli", "iteration": iteration},
             )
+            if settings.worker_enable_codex:
+                raise
     else:
         provider_result = {"provider": settings.worker_code_provider, "skipped_reason": "Provider is not implemented"}
         ctx.event(
@@ -849,6 +884,16 @@ def run_pipeline(api: FactoryApi, project_id: str) -> None:
     max_fix_iterations = int(runtime_settings.get("max_fix_iterations") or settings.worker_max_fix_iterations)
     api.set_project_status(project_id, "running", str(workspace))
     ctx.event("pipeline", "Pipeline started", metadata_json={"workspace": str(workspace)})
+    for task in tasks:
+        brief_id = task.get("input_json", {}).get("factory_brief_id")
+        if brief_id:
+            api.factory_brief_event(
+                str(brief_id),
+                "pipeline_started",
+                f"Project pipeline started for {project['name']}.",
+                metadata_json={"step": "pipeline_started", "project_id": project_id, "workspace": str(workspace)},
+            )
+            break
 
     try:
         run_checked_agent(ctx, "prd_agent", prd_agent)
@@ -869,13 +914,50 @@ def run_pipeline(api: FactoryApi, project_id: str) -> None:
         policy_output = run_checked_agent(ctx, "policy_agent", policy_agent)
         if qa_output and qa_output.get("passed") and policy_output.get("passed"):
             api.set_project_status(project_id, "release_candidate", str(workspace))
+            write_factory_run_report(ctx, qa_output, policy_output, "release_candidate")
             ctx.event("pipeline", "Pipeline completed successfully")
+            for task in tasks:
+                brief_id = task.get("input_json", {}).get("factory_brief_id")
+                if brief_id:
+                    api.factory_brief_event(
+                        str(brief_id),
+                        "pipeline_finished",
+                        "Pipeline finished with release_candidate.",
+                        level="success",
+                        metadata_json={"step": "pipeline_finished", "project_id": project_id, "final_status": "release_candidate"},
+                    )
+                    break
         else:
             api.set_project_status(project_id, "NEEDS_HUMAN_REVIEW", str(workspace))
+            write_factory_run_report(ctx, qa_output, policy_output, "NEEDS_HUMAN_REVIEW")
             ctx.event("pipeline", "Pipeline needs human review", level="warning")
+            for task in tasks:
+                brief_id = task.get("input_json", {}).get("factory_brief_id")
+                if brief_id:
+                    api.factory_brief_event(
+                        str(brief_id),
+                        "pipeline_finished",
+                        "Pipeline finished with NEEDS_HUMAN_REVIEW.",
+                        level="warning",
+                        metadata_json={"step": "pipeline_finished", "project_id": project_id, "final_status": "NEEDS_HUMAN_REVIEW"},
+                    )
+                    break
     except PipelineStopped as exc:
         api.set_project_status(project_id, "stopped", str(workspace))
+        write_factory_run_report(ctx, None, None, "stopped")
         ctx.event("pipeline", "Pipeline stopped", level="warning", stderr=str(exc))
+        for task in tasks:
+            brief_id = task.get("input_json", {}).get("factory_brief_id")
+            if brief_id:
+                api.factory_brief_event(
+                    str(brief_id),
+                    "pipeline_finished",
+                    "Pipeline stopped before completion.",
+                    level="warning",
+                    metadata_json={"step": "pipeline_finished", "project_id": project_id, "final_status": "stopped", "reason": str(exc)},
+                )
+                break
     except Exception:
         api.set_project_status(project_id, "NEEDS_HUMAN_REVIEW", str(workspace))
+        write_factory_run_report(ctx, None, None, "NEEDS_HUMAN_REVIEW")
         raise
