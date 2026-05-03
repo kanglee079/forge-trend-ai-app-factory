@@ -14,8 +14,11 @@ Status legend: Todo, In Progress, Done.
 | Project detail | Progress is split across tabs; no clear current step, retry count, elapsed time, log controls, or copy errors. | Critical | Add pipeline progress panel, current step, latest log, filtered logs, copy buttons, clear logs confirm. | `apps/dashboard/app/projects/[id]/ProjectDetailClient.tsx` | Done |
 | Logs | No standalone log viewer with search/filter/copy/clear. | High | Add `/logs` page and project event clear endpoint. | `apps/dashboard/app/logs/page.tsx`, `services/api/app/main.py` | Done |
 | Setup Doctor | Users cannot diagnose missing local dependencies from the UI. | Critical | Add `/doctor` page and API endpoint for tool, service, worker, Flutter, and Codex checks. | `apps/dashboard/app/doctor/page.tsx`, `services/api/app/main.py` | Done |
-| Settings | No settings screen for local worker/model/retry/theme/notifications. | High | Add `/settings` page backed by localStorage for app preferences. | `apps/dashboard/app/settings/page.tsx` | Todo |
-| Safety | Policy gate exists only inside project detail and lacks release blocking explanation. | Medium | Improve project policy panel and overview readiness gates. | `ProjectDetailClient.tsx`, `docs/POLICY_GATES.md` | Todo |
+| Settings | No settings screen for local worker/model/retry/theme/notifications. | High | Add `/settings` page backed by API-persisted runtime settings for app preferences and worker retry limits. | `apps/dashboard/app/settings/page.tsx`, `services/api/app/runtime_state.py` | Done |
+| Notification Center | Toasts disappear and there is no notification history or unread count. | Medium | Add shell notification bell backed by feedback provider history. | `apps/dashboard/components/NotificationCenter.tsx`, `apps/dashboard/components/feedback.tsx` | Done |
+| Factory Controls | Start/Pause/Stop are local UI state and do not affect workers. | High | Persist factory mode through API and have workers pause/stop taking new jobs. | `apps/dashboard/app/page.tsx`, `services/api/app/main.py`, `workers/daemon/daemon/main.py` | Done |
+| Worker Stop | Stop request does not interrupt the pipeline between agent steps. | High | Worker checks factory/project stop state between agent runs and marks project stopped. | `workers/daemon/daemon/agents.py`, `workers/daemon/daemon/api.py` | Done |
+| Safety | Policy gate exists only inside project detail and lacks release blocking explanation. | Medium | Improve project policy panel and overview readiness gates. | `ProjectDetailClient.tsx`, `docs/POLICY_GATES.md` | In Progress |
 | Forms | Server/client validation is inconsistent; slugs, labels, budgets, and descriptions need constraints. | High | Add Pydantic and client validation with friendly errors. | `services/api/app/schemas.py`, client pages | Todo |
 | Async behavior | Several loads still fall back to `console.error` or silent failure. | High | Surface errors through toast/notice and retry controls. | All client pages | In Progress |
 | Desktop launcher | Desktop shell exists, but README should clearly explain it is the primary entrypoint and localhost is internal. | Medium | Update README and launcher safeguards. | `README.md`, `run.command`, `run.bat`, `scripts/run_desktop.mjs` | Done |
@@ -31,15 +34,16 @@ Status legend: Todo, In Progress, Done.
 - Ideas
 - Projects
 - Logs
+- Settings
 - Project detail with Overview, PRD, Agent Timeline, Logs, QA, Policy, Artifacts, Settings tabs
 
 ## Key UX Risks
 
-- New users do not know the required sequence: Codex login, local worker, API key, idea, project, run pipeline.
-- Running a project can modify workspace files but currently does not clearly ask for confirmation.
-- Pipeline progress is not summarized as a state machine; users must infer from events.
+- Trend/review mining is still mostly placeholder and does not yet produce evidence-backed ideas.
+- Pipeline step state is inferred from events/artifacts/QA rather than a first-class DB table.
+- Provider key testing validates decryptability locally but does not yet call provider APIs.
 - Worker records can become stale; the API now marks stale workers offline, but the UI needs guidance.
-- Logs exist per project but are not searchable or easy to copy.
+- Artifact delivery still depends on local paths; MinIO links and previews remain incomplete.
 
 ## Completion Strategy
 

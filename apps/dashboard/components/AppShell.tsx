@@ -3,10 +3,11 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { Activity, CheckCircle2, FileText, KeyRound, LayoutDashboard, Lightbulb, Moon, Server, Stethoscope, Smartphone, Sun } from "lucide-react";
+import { Activity, CheckCircle2, FileText, KeyRound, LayoutDashboard, Lightbulb, Moon, Server, Settings, Stethoscope, Smartphone, Sun } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { FeedbackProvider } from "@/components/feedback";
+import { NotificationCenter } from "@/components/NotificationCenter";
 import { Badge, Button } from "@/components/ui";
 
 const navItems = [
@@ -16,7 +17,8 @@ const navItems = [
   { href: "/workers", label: "Workers", icon: Server },
   { href: "/ideas", label: "Ideas", icon: Lightbulb },
   { href: "/projects", label: "Projects", icon: Smartphone },
-  { href: "/logs", label: "Logs", icon: FileText }
+  { href: "/logs", label: "Logs", icon: FileText },
+  { href: "/settings", label: "Settings", icon: Settings }
 ];
 
 type HealthState = {
@@ -108,6 +110,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <div className="flex items-center gap-2">
                 <SystemBadge label="API" online={health.apiOnline} />
                 <Badge tone={health.workerCount ? "success" : "warning"}>{health.workerCount ?? "-"} workers</Badge>
+                <NotificationCenter />
                 <Button
                   type="button"
                   variant="secondary"

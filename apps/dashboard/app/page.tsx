@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { Activity, AlertTriangle, CheckCircle2, KeyRound, Loader2, Pause, Play, RefreshCw, Server, Smartphone, Square } from "lucide-react";
-import { AgentEvent, api, ApiError, ApiKey, Artifact, DoctorResponse, Project, Worker } from "@/lib/api";
+import { AgentEvent, api, ApiError, ApiKey, Artifact, DoctorResponse, FactoryState, Project, Worker } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
 import { Badge, Button, Card, EmptyState, Notice, PageHeader, Progress, Skeleton, StatusBadge } from "@/components/ui";
 
@@ -15,27 +15,29 @@ type OverviewState = {
   projects: Project[];
   events: AgentEvent[];
   artifacts: Artifact[];
+  factory: FactoryState | null;
 };
 
 export default function OverviewPage() {
   const [data, setData] = useState<OverviewState | null>(null);
   const [loading, setLoading] = useState(true);
+  const [modeSaving, setModeSaving] = useState<FactoryState["mode"] | null>(null);
   const [notice, setNotice] = useState<{ tone: "success" | "danger" | "warning"; message: string } | null>(null);
-  const [factoryState, setFactoryState] = useState<"running" | "paused" | "stopped">("running");
 
   async function load({ quiet = false } = {}) {
     setLoading(true);
     try {
-      const [health, doctor, keys, workers, projects, events] = await Promise.all([
+      const [health, doctor, keys, workers, projects, events, factory] = await Promise.all([
         api.health().catch(() => ({ status: "offline", service: "forge-trend-api" })),
         api.doctor().catch(() => null),
         api.apiKeys().catch(() => []),
         api.workers().catch(() => []),
         api.projects().catch(() => []),
-        api.allEvents({ limit: 80 }).catch(() => [])
+        api.allEvents({ limit: 80 }).catch(() => []),
+        api.factoryState().catch(() => null)
       ]);
       const artifactGroups = await Promise.all(projects.slice(0, 8).map((project) => api.artifacts(project.id).catch(() => [])));
-      setData({ health, doctor, keys, workers, projects, events, artifacts: artifactGroups.flat() });
+      setData({ health, doctor, keys, workers, projects, events, artifacts: artifactGroups.flat(), factory });
       if (!quiet) setNotice({ tone: "success", message: "Command center refreshed." });
     } catch (error) {
       setNotice({ tone: "danger", message: error instanceof ApiError ? error.detail : "Could not load command center." });
@@ -47,6 +49,19 @@ export default function OverviewPage() {
   useEffect(() => {
     load({ quiet: true }).catch(console.error);
   }, []);
+
+  async function setFactoryMode(mode: FactoryState["mode"]) {
+    setModeSaving(mode);
+    try {
+      const factory = await api.updateFactoryState(mode);
+      setData((current) => current ? { ...current, factory } : current);
+      setNotice({ tone: mode === "running" ? "success" : "warning", message: `Factory mode set to ${mode}. Workers will observe this before taking new jobs.` });
+    } catch (error) {
+      setNotice({ tone: "danger", message: error instanceof ApiError ? error.detail : "Could not update factory mode." });
+    } finally {
+      setModeSaving(null);
+    }
+  }
 
   const readiness = useMemo(() => (data ? calculateReadiness(data) : { score: 0, items: [] }), [data]);
   const activeProjects = data?.projects.filter((project) => ["queued", "running", "stop_requested"].includes(project.status)).slice(0, 4) ?? [];
@@ -102,23 +117,23 @@ export default function OverviewPage() {
           <h2 className="mb-4 text-base font-semibold">Factory Controls</h2>
           <div className="mb-4 rounded-md border border-border bg-background p-3">
             <div className="text-sm text-muted-foreground">Mode</div>
-            <div className="mt-1 text-xl font-semibold capitalize">{factoryState}</div>
+            <div className="mt-1 text-xl font-semibold capitalize">{data?.factory?.mode ?? "unknown"}</div>
           </div>
           <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-1">
-            <Button type="button" onClick={() => setFactoryState("running")}>
-              <Play size={15} />
+            <Button type="button" onClick={() => setFactoryMode("running")} disabled={Boolean(modeSaving)}>
+              {modeSaving === "running" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play size={15} />}
               Start
             </Button>
-            <Button type="button" variant="secondary" onClick={() => setFactoryState("paused")}>
-              <Pause size={15} />
+            <Button type="button" variant="secondary" onClick={() => setFactoryMode("paused")} disabled={Boolean(modeSaving)}>
+              {modeSaving === "paused" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Pause size={15} />}
               Pause
             </Button>
-            <Button type="button" variant="danger" onClick={() => setFactoryState("stopped")}>
-              <Square size={15} />
+            <Button type="button" variant="danger" onClick={() => setFactoryMode("stopped")} disabled={Boolean(modeSaving)}>
+              {modeSaving === "stopped" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square size={15} />}
               Stop
             </Button>
           </div>
-          <p className="mt-3 text-xs text-muted-foreground">Controls are local UI state until daemon lifecycle endpoints are wired.</p>
+          <p className="mt-3 text-xs text-muted-foreground">Paused/stopped workers stop taking new jobs. Stop also cancels between agent steps.</p>
         </Card>
       </div>
 

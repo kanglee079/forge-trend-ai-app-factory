@@ -250,6 +250,7 @@ function Overview({
           <div className="flex flex-wrap gap-2">{artifacts.length ? artifacts.map((item) => <Badge key={item.id}>{item.name}</Badge>) : <span className="text-sm text-muted-foreground">No artifacts yet.</span>}</div>
         </Card>
       </div>
+      <ReleaseReadinessPanel project={project} qa={qa} policy={policy} artifacts={artifacts} />
     </div>
   );
 }
@@ -306,9 +307,41 @@ function PolicyPanel({ policy }: { policy: PolicyResult[] }) {
 function ArtifactsPanel({ artifacts }: { artifacts: Artifact[] }) {
   return (
     <Table>
-      <thead><tr><Th>Name</Th><Th>Kind</Th><Th>Path</Th><Th>Created</Th></tr></thead>
-      <tbody>{artifacts.map((item) => <tr key={item.id}><Td>{item.name}</Td><Td>{item.kind}</Td><Td className="max-w-xl truncate">{item.path}</Td><Td>{formatDate(item.created_at)}</Td></tr>)}</tbody>
+      <thead><tr><Th>Name</Th><Th>Kind</Th><Th>Path</Th><Th>Created</Th><Th>Action</Th></tr></thead>
+      <tbody>{artifacts.map((item) => <tr key={item.id}><Td>{item.name}</Td><Td>{item.kind}</Td><Td className="max-w-xl truncate">{item.path}</Td><Td>{formatDate(item.created_at)}</Td><Td><CopyButton value={item.path} label="Copy path" /></Td></tr>)}</tbody>
     </Table>
+  );
+}
+
+function ReleaseReadinessPanel({ project, qa, policy, artifacts }: { project: Project; qa: QAResult[]; policy: PolicyResult[]; artifacts: Artifact[] }) {
+  const latestPolicy = policy[0];
+  const checks = [
+    { label: "QA passed", complete: qa.some((item) => item.status === "passed" && item.exit_code === 0) && !qa.some((item) => item.status === "failed" || item.exit_code !== 0) },
+    { label: "Policy passed", complete: Boolean(latestPolicy?.passed) },
+    { label: "PRD generated", complete: artifacts.some((item) => item.name === "prd.md") },
+    { label: "Design docs generated", complete: artifacts.some((item) => item.name === "design_system.md" || item.name === "screen_flow.md") },
+    { label: "APK/build artifact exists", complete: artifacts.some((item) => item.kind === "build" || item.name.endsWith(".apk")) },
+    { label: "Human approval still required", complete: project.status === "release_candidate" || project.status === "NEEDS_HUMAN_REVIEW" },
+  ];
+  const readyCount = checks.filter((check) => check.complete).length;
+  return (
+    <Card>
+      <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 className="text-base font-semibold">Release Readiness Gate</h2>
+          <p className="text-sm text-muted-foreground">Release automation remains blocked until QA, policy, artifacts, and human approval are all satisfied.</p>
+        </div>
+        <Badge tone={readyCount === checks.length ? "success" : "warning"}>{readyCount}/{checks.length}</Badge>
+      </div>
+      <div className="grid gap-2 md:grid-cols-2">
+        {checks.map((check) => (
+          <div key={check.label} className="flex items-center justify-between gap-3 rounded-md border border-border bg-background px-3 py-2 text-sm">
+            <span>{check.label}</span>
+            <Badge tone={check.complete ? "success" : "warning"}>{check.complete ? "ready" : "blocked"}</Badge>
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }
 

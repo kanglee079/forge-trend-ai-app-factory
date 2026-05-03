@@ -39,6 +39,25 @@ export type DoctorResponse = {
   checks: DoctorCheck[];
 };
 
+export type FactoryState = {
+  mode: "running" | "paused" | "stopped";
+  updated_at: string;
+};
+
+export type AppSettings = {
+  default_provider: string;
+  default_model: string;
+  max_fix_iterations: number;
+  workspace_root: string;
+  auto_refresh_seconds: number;
+  notifications_enabled: boolean;
+  theme: string;
+  daily_budget_usd: string;
+  monthly_budget_usd: string;
+  feature_flags: Record<string, boolean>;
+  updated_at: string;
+};
+
 export type Worker = {
   id: string;
   machine_name: string;
@@ -173,6 +192,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => request<{ status: string; service: string }>("/health"),
   doctor: () => request<DoctorResponse>("/doctor"),
+  settings: () => request<AppSettings>("/settings"),
+  updateSettings: (body: unknown) => request<AppSettings>("/settings", { method: "PATCH", body: JSON.stringify(body) }),
+  factoryState: () => request<FactoryState>("/factory/state"),
+  updateFactoryState: (mode: FactoryState["mode"]) => request<FactoryState>("/factory/state", { method: "PATCH", body: JSON.stringify({ mode }) }),
   apiKeys: () => request<ApiKey[]>("/api-keys"),
   createApiKey: (body: unknown) => request<ApiKey>("/api-keys", { method: "POST", body: JSON.stringify(body) }),
   updateApiKey: (id: string, body: unknown) => request<ApiKey>(`/api-keys/${id}`, { method: "PATCH", body: JSON.stringify(body) }),

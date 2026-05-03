@@ -14,6 +14,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 TEMPLATE_ROOT = REPO_ROOT / "templates" / "flutter_mobile_app"
 
 
+class PipelineStopped(RuntimeError):
+    pass
+
+
 def slug_to_title(slug: str) -> str:
     return " ".join(word.capitalize() for word in slug.replace("_", "-").split("-") if word)
 
@@ -60,6 +64,23 @@ def git_commit(ctx: PipelineContext, message: str) -> None:
     diff = run_safe(["git", "diff", "--cached", "--quiet"], cwd=ctx.workspace, workspace=ctx.workspace)
     if diff.returncode == 1:
         run_safe(["git", "commit", "-m", message], cwd=ctx.workspace, workspace=ctx.workspace)
+
+
+def ensure_not_stopped(ctx: PipelineContext) -> None:
+    factory_state = ctx.api.factory_state()
+    if factory_state.get("mode") == "stopped":
+        raise PipelineStopped("Factory was stopped from the dashboard.")
+    project = ctx.api.get_project(ctx.project_id)
+    ctx.project = project
+    if project.get("status") in {"stop_requested", "stopped"}:
+        raise PipelineStopped("Project stop was requested from the dashboard.")
+
+
+def run_checked_agent(ctx: PipelineContext, agent_name: str, fn, *, iteration: int = 0, **kwargs: Any) -> dict[str, Any]:
+    ensure_not_stopped(ctx)
+    output = run_agent(ctx, agent_name, fn, iteration=iteration, **kwargs)
+    ensure_not_stopped(ctx)
+    return output
 
 
 def build_codex_prompt(ctx: PipelineContext, iteration: int, qa_error: str | None) -> str:
@@ -440,32 +461,37 @@ def run_pipeline(api: FactoryApi, project_id: str) -> None:
     (workspace / "artifacts").mkdir(exist_ok=True)
 
     ctx = PipelineContext(api, project, workspace, idea)
+    runtime_settings = api.app_settings()
+    max_fix_iterations = int(runtime_settings.get("max_fix_iterations") or settings.worker_max_fix_iterations)
     api.set_project_status(project_id, "running", str(workspace))
     ctx.event("pipeline", "Pipeline started", metadata_json={"workspace": str(workspace)})
 
     try:
-        run_agent(ctx, "prd_agent", prd_agent)
-        run_agent(ctx, "ux_agent", ux_agent)
-        run_agent(ctx, "code_agent", code_agent, iteration=0)
+        run_checked_agent(ctx, "prd_agent", prd_agent)
+        run_checked_agent(ctx, "ux_agent", ux_agent)
+        run_checked_agent(ctx, "code_agent", code_agent, iteration=0)
 
         qa_output: dict[str, Any] | None = None
-        for iteration in range(settings.worker_max_fix_iterations + 1):
-            qa_output = run_agent(ctx, "qa_agent", qa_agent, iteration=iteration)
+        for iteration in range(max_fix_iterations + 1):
+            qa_output = run_checked_agent(ctx, "qa_agent", qa_agent, iteration=iteration)
             if qa_output.get("passed"):
                 break
             failed = qa_output["failed"]
-            if iteration >= settings.worker_max_fix_iterations:
+            if iteration >= max_fix_iterations:
                 break
             error_text = f"{failed['command']}\nSTDOUT:\n{failed['stdout'][-4000:]}\nSTDERR:\n{failed['stderr'][-4000:]}"
-            run_agent(ctx, "code_agent", code_agent, iteration=iteration + 1, qa_error=error_text)
+            run_checked_agent(ctx, "code_agent", code_agent, iteration=iteration + 1, qa_error=error_text)
 
-        policy_output = run_agent(ctx, "policy_agent", policy_agent)
+        policy_output = run_checked_agent(ctx, "policy_agent", policy_agent)
         if qa_output and qa_output.get("passed") and policy_output.get("passed"):
             api.set_project_status(project_id, "release_candidate", str(workspace))
             ctx.event("pipeline", "Pipeline completed successfully")
         else:
             api.set_project_status(project_id, "NEEDS_HUMAN_REVIEW", str(workspace))
             ctx.event("pipeline", "Pipeline needs human review", level="warning")
+    except PipelineStopped as exc:
+        api.set_project_status(project_id, "stopped", str(workspace))
+        ctx.event("pipeline", "Pipeline stopped", level="warning", stderr=str(exc))
     except Exception:
         api.set_project_status(project_id, "NEEDS_HUMAN_REVIEW", str(workspace))
         raise

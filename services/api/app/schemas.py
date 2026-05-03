@@ -34,6 +34,47 @@ class DoctorResponse(BaseModel):
     checks: list[DoctorCheck]
 
 
+class FactoryState(BaseModel):
+    mode: str = "running"
+    updated_at: datetime
+
+
+class FactoryStatePatch(BaseModel):
+    mode: str
+
+
+class AppSettings(BaseModel):
+    default_provider: str = "openai"
+    default_model: str = "gpt-5.2"
+    max_fix_iterations: int = Field(default=3, ge=0, le=20)
+    workspace_root: str = "workspaces"
+    auto_refresh_seconds: int = Field(default=5, ge=2, le=60)
+    notifications_enabled: bool = True
+    theme: str = "system"
+    daily_budget_usd: Decimal = Decimal("5")
+    monthly_budget_usd: Decimal = Decimal("100")
+    feature_flags: dict[str, bool] = Field(default_factory=lambda: {
+        "trend_radar": False,
+        "provider_key_network_test": False,
+        "minio_artifacts": False,
+        "release_approval": False,
+    })
+    updated_at: datetime
+
+
+class AppSettingsPatch(BaseModel):
+    default_provider: str | None = None
+    default_model: str | None = None
+    max_fix_iterations: int | None = Field(default=None, ge=0, le=20)
+    workspace_root: str | None = None
+    auto_refresh_seconds: int | None = Field(default=None, ge=2, le=60)
+    notifications_enabled: bool | None = None
+    theme: str | None = None
+    daily_budget_usd: Decimal | None = None
+    monthly_budget_usd: Decimal | None = None
+    feature_flags: dict[str, bool] | None = None
+
+
 class ApiKeyCreate(BaseModel):
     provider: str
     label: str

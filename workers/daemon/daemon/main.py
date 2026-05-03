@@ -41,6 +41,16 @@ def main() -> None:
     print(f"worker {worker_id} listening on queue {settings.pipeline_queue_name}")
 
     while not shutdown.is_set():
+        try:
+            factory_state = api.factory_state()
+            mode = factory_state.get("mode", "running")
+            if mode != "running":
+                api.heartbeat(worker_id, status=mode, current_job_id=None)
+                shutdown.wait(3)
+                continue
+        except Exception as exc:
+            print(f"factory state check failed: {exc}")
+
         item = redis.blpop(settings.pipeline_queue_name, timeout=5)
         if not item:
             continue

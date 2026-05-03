@@ -26,6 +26,7 @@ from app.models import (
     Worker,
 )
 from app.queue import enqueue_pipeline
+from app.runtime_state import get_app_settings, get_factory_state, patch_app_settings, patch_factory_state
 from app.schemas import (
     ActionResponse,
     AgentEventCreate,
@@ -37,11 +38,15 @@ from app.schemas import (
     ApiKeyPatch,
     ApiKeyRead,
     ApiKeyTestResponse,
+    AppSettings,
+    AppSettingsPatch,
     ArtifactCreate,
     ArtifactRead,
     BuildCreate,
     DoctorCheck,
     DoctorResponse,
+    FactoryState,
+    FactoryStatePatch,
     HealthResponse,
     IdeaCreate,
     IdeaRead,
@@ -165,6 +170,29 @@ def health() -> HealthResponse:
 @app.get("/doctor", response_model=DoctorResponse)
 def doctor(db: Session = Depends(get_db)) -> DoctorResponse:
     return build_doctor_report(db)
+
+
+@app.get("/settings", response_model=AppSettings)
+def read_settings() -> AppSettings:
+    return get_app_settings()
+
+
+@app.patch("/settings", response_model=AppSettings)
+def update_settings(payload: AppSettingsPatch) -> AppSettings:
+    return patch_app_settings(payload)
+
+
+@app.get("/factory/state", response_model=FactoryState)
+def read_factory_state() -> FactoryState:
+    return get_factory_state()
+
+
+@app.patch("/factory/state", response_model=FactoryState)
+def update_factory_state(payload: FactoryStatePatch) -> FactoryState:
+    try:
+        return patch_factory_state(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.post("/api-keys", response_model=ApiKeyRead)
@@ -342,6 +370,9 @@ def delete_project(id: UUID, db: Session = Depends(get_db)) -> ActionResponse:
 
 @app.post("/projects/{id}/run-pipeline", response_model=PipelineRunResponse)
 def run_pipeline(id: UUID, db: Session = Depends(get_db)) -> PipelineRunResponse:
+    factory = get_factory_state()
+    if factory.mode != "running":
+        raise HTTPException(status_code=409, detail=f"Factory is {factory.mode}. Start it before queueing pipeline runs.")
     project = get_or_404(db, Project, id)
     project.status = "queued"
     queue = enqueue_pipeline(project.id)
@@ -353,6 +384,9 @@ def run_pipeline(id: UUID, db: Session = Depends(get_db)) -> PipelineRunResponse
 
 @app.post("/projects/{id}/retry", response_model=PipelineRunResponse)
 def retry_pipeline(id: UUID, db: Session = Depends(get_db)) -> PipelineRunResponse:
+    factory = get_factory_state()
+    if factory.mode != "running":
+        raise HTTPException(status_code=409, detail=f"Factory is {factory.mode}. Start it before queueing pipeline runs.")
     project = get_or_404(db, Project, id)
     project.status = "queued"
     queue = enqueue_pipeline(project.id)

@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     worker_stale_seconds: int = 60
     factory_secret_key: str = Field(default="")
     local_artifact_root: str = "workspaces"
+    runtime_state_path: str = ".runtime/factory_state.json"
 
     @field_validator("factory_secret_key")
     @classmethod

@@ -14,6 +14,11 @@ type Toast = {
   tone: ToastTone;
 };
 
+export type NotificationItem = Toast & {
+  createdAt: string;
+  read: boolean;
+};
+
 type ConfirmOptions = {
   title: string;
   description: string;
@@ -25,18 +30,24 @@ type ConfirmOptions = {
 type FeedbackContextValue = {
   notify: (toast: Omit<Toast, "id">) => void;
   confirm: (options: ConfirmOptions) => Promise<boolean>;
+  notifications: NotificationItem[];
+  unreadCount: number;
+  markAllRead: () => void;
+  clearNotifications: () => void;
 };
 
 const FeedbackContext = createContext<FeedbackContextValue | null>(null);
 
 export function FeedbackProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [confirmState, setConfirmState] = useState<ConfirmOptions | null>(null);
   const confirmResolver = useRef<((confirmed: boolean) => void) | null>(null);
 
   const notify = useCallback((toast: Omit<Toast, "id">) => {
     const id = Date.now() + Math.random();
     setToasts((current) => [...current, { ...toast, id }]);
+    setNotifications((current) => [{ ...toast, id, createdAt: new Date().toISOString(), read: false }, ...current].slice(0, 50));
     window.setTimeout(() => {
       setToasts((current) => current.filter((item) => item.id !== id));
     }, 5200);
@@ -55,7 +66,19 @@ export function FeedbackProvider({ children }: { children: React.ReactNode }) {
     setConfirmState(null);
   }, []);
 
-  const value = useMemo(() => ({ notify, confirm }), [notify, confirm]);
+  const markAllRead = useCallback(() => {
+    setNotifications((current) => current.map((item) => ({ ...item, read: true })));
+  }, []);
+
+  const clearNotifications = useCallback(() => {
+    setNotifications([]);
+  }, []);
+
+  const unreadCount = notifications.filter((item) => !item.read).length;
+  const value = useMemo(
+    () => ({ notify, confirm, notifications, unreadCount, markAllRead, clearNotifications }),
+    [notify, confirm, notifications, unreadCount, markAllRead, clearNotifications]
+  );
 
   return (
     <FeedbackContext.Provider value={value}>

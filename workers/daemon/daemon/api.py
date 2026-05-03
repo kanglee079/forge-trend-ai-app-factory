@@ -22,6 +22,12 @@ class FactoryApi:
     def list_ideas(self) -> list[dict[str, Any]]:
         return self._request("GET", "/ideas")
 
+    def factory_state(self) -> dict[str, Any]:
+        return self._request("GET", "/factory/state")
+
+    def app_settings(self) -> dict[str, Any]:
+        return self._request("GET", "/settings")
+
     def set_project_status(self, project_id: str, status: str, workspace_path: str | None = None) -> dict[str, Any]:
         return self._request("PATCH", f"/internal/projects/{project_id}/status", json={"status": status, "workspace_path": workspace_path})
 
