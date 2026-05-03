@@ -9,6 +9,7 @@ class WorkerSettings(BaseSettings):
     worker_api_base_url: str = "http://localhost:8000"
     redis_url: str = "redis://localhost:6379/0"
     pipeline_queue_name: str = "project_pipeline"
+    factory_brief_queue_name: str = "factory_brief_queue"
     worker_workspace_root: Path = Path("workspaces")
     worker_heartbeat_seconds: int = 15
     worker_max_fix_iterations: int = 10

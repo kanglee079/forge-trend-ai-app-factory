@@ -5,7 +5,7 @@ import time
 
 from redis import Redis
 
-from daemon.agents import run_pipeline
+from daemon.agents import run_factory_brief, run_pipeline
 from daemon.api import FactoryApi
 from daemon.capabilities import detect_capabilities
 from daemon.config import settings
@@ -38,7 +38,7 @@ def main() -> None:
     thread.start()
 
     redis = Redis.from_url(settings.redis_url, decode_responses=True)
-    print(f"worker {worker_id} listening on queue {settings.pipeline_queue_name}")
+    print(f"worker {worker_id} listening on queues {settings.factory_brief_queue_name}, {settings.pipeline_queue_name}")
 
     while not shutdown.is_set():
         try:
@@ -51,11 +51,28 @@ def main() -> None:
         except Exception as exc:
             print(f"factory state check failed: {exc}")
 
-        item = redis.blpop(settings.pipeline_queue_name, timeout=5)
+        item = redis.blpop([settings.factory_brief_queue_name, settings.pipeline_queue_name], timeout=5)
         if not item:
             continue
-        _, raw_payload = item
+        queue_name, raw_payload = item
         payload = json.loads(raw_payload)
+        if queue_name == settings.factory_brief_queue_name:
+            brief_id = payload["factory_brief_id"]
+            current_job["id"] = brief_id
+            try:
+                api.heartbeat(worker_id, status="busy", current_job_id=brief_id)
+                run_factory_brief(api, brief_id)
+            except Exception as exc:
+                try:
+                    api.set_factory_brief_status(brief_id, "failed")
+                except Exception:
+                    pass
+                print(f"factory brief failed for {brief_id}: {exc}")
+            finally:
+                current_job["id"] = None
+                api.heartbeat(worker_id, status="online", current_job_id=None)
+            continue
+
         project_id = payload["project_id"]
         current_job["id"] = project_id
         try:

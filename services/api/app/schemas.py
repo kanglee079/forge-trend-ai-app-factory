@@ -226,6 +226,16 @@ class FactoryBriefCreate(BaseModel):
     policy_strictness: str = "standard"
 
 
+class FactoryBriefStatusPatch(BaseModel):
+    status: str
+
+
+class FactoryBriefRunResponse(BaseModel):
+    factory_brief_id: UUID
+    status: str
+    queue: str
+
+
 class FactoryBriefRead(ApiModel):
     id: UUID
     mode: str
@@ -252,6 +262,18 @@ class FactoryBriefRead(ApiModel):
     updated_at: datetime
 
 
+class ResearchFindingCreate(BaseModel):
+    source: str
+    title: str
+    summary: str
+    category: str | None = None
+    keywords: list = Field(default_factory=list)
+    pain_points: list = Field(default_factory=list)
+    competitor_gaps: list = Field(default_factory=list)
+    evidence_json: dict = Field(default_factory=dict)
+    confidence_score: int = Field(default=50, ge=0, le=100)
+
+
 class ResearchFindingRead(ApiModel):
     id: UUID
     factory_brief_id: UUID
@@ -265,6 +287,28 @@ class ResearchFindingRead(ApiModel):
     evidence_json: dict
     confidence_score: int
     created_at: datetime
+
+
+class OpportunityCandidateCreate(BaseModel):
+    title: str
+    description: str
+    target_user: str
+    problem: str
+    unique_angle: str
+    core_features: list = Field(default_factory=list)
+    monetization_plan: str | None = None
+    iap_plan_json: dict = Field(default_factory=dict)
+    subscription_plan_json: dict = Field(default_factory=dict)
+    backend_plan_json: dict = Field(default_factory=dict)
+    opportunity_score: int = Field(default=50, ge=0, le=100)
+    demand_score: int = Field(default=50, ge=0, le=100)
+    pain_score: int = Field(default=50, ge=0, le=100)
+    monetization_score: int = Field(default=50, ge=0, le=100)
+    build_feasibility_score: int = Field(default=50, ge=0, le=100)
+    differentiation_score: int = Field(default=50, ge=0, le=100)
+    policy_risk_score: int = Field(default=20, ge=0, le=100)
+    originality_score: int = Field(default=75, ge=0, le=100)
+    status: str = "proposed"
 
 
 class OpportunityCandidateRead(ApiModel):
@@ -298,6 +342,11 @@ class FactoryBriefDetail(FactoryBriefRead):
     candidates: list[OpportunityCandidateRead] = Field(default_factory=list)
 
 
+class FactoryBriefFinalizeRequest(BaseModel):
+    candidate_id: UUID
+    queue_pipeline: bool = True
+
+
 class ProjectTaskCreate(BaseModel):
     title: str
     description: str
@@ -311,6 +360,13 @@ class ProjectTaskPatch(BaseModel):
     output_json: dict | None = None
     error_message: str | None = None
     commit_sha: str | None = None
+
+
+class ProjectTaskAgentPatch(ProjectTaskPatch):
+    title: str | None = None
+    description: str | None = None
+    priority: int | None = None
+    input_json: dict | None = None
 
 
 class ProjectTaskRead(ApiModel):

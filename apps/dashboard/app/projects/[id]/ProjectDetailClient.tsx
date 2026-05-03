@@ -2,14 +2,14 @@
 
 import { useEffect, useState } from "react";
 import { Loader2, Play, RefreshCw, RotateCcw, Square } from "lucide-react";
-import { AgentEvent, ApiError, api, Artifact, PolicyResult, Project, QAResult, Worker } from "@/lib/api";
+import { AgentEvent, ApiError, api, Artifact, FactoryBriefDetail, PolicyResult, Project, ProjectTask, QAResult, Worker } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
 import { Badge, Button, Card, Notice, StatusBadge, Table, Td, Th } from "@/components/ui";
 import { useFeedback } from "@/components/feedback";
 import { CopyButton, LogViewer } from "@/components/log-viewer";
 import { derivePipelineSteps, getCurrentStep, getLatestFailure, getPipelineProgress, PipelineStepper } from "@/components/pipeline";
 
-const tabs = ["Overview", "PRD", "Agent Timeline", "Logs", "QA", "Policy", "Artifacts", "Settings"] as const;
+const tabs = ["Overview", "Research", "Tasks", "Code Agent", "PRD", "Agent Timeline", "Logs", "QA", "Policy", "Artifacts", "Settings"] as const;
 type Tab = (typeof tabs)[number];
 
 export function ProjectDetailClient({ initialProject }: { initialProject: Project }) {
@@ -20,9 +20,12 @@ export function ProjectDetailClient({ initialProject }: { initialProject: Projec
   const [qa, setQa] = useState<QAResult[]>([]);
   const [policy, setPolicy] = useState<PolicyResult[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const [tasks, setTasks] = useState<ProjectTask[]>([]);
+  const [factoryBrief, setFactoryBrief] = useState<FactoryBriefDetail | null>(null);
   const [workers, setWorkers] = useState<Worker[]>([]);
   const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState(false);
+  const [runningTaskId, setRunningTaskId] = useState<string | null>(null);
   const [stopping, setStopping] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [notice, setNotice] = useState<{ tone: "success" | "danger" | "warning"; message: string } | null>(null);
@@ -30,12 +33,13 @@ export function ProjectDetailClient({ initialProject }: { initialProject: Projec
   async function load() {
     setLoading(true);
     try {
-      const [projectItem, eventItems, qaItems, policyItems, artifactItems, workerItems] = await Promise.all([
+      const [projectItem, eventItems, qaItems, policyItems, artifactItems, taskItems, workerItems] = await Promise.all([
         api.project(project.id),
         api.events(project.id),
         api.qa(project.id),
         api.policy(project.id),
         api.artifacts(project.id),
+        api.tasks(project.id),
         api.workers()
       ]);
       setProject(projectItem);
@@ -43,7 +47,12 @@ export function ProjectDetailClient({ initialProject }: { initialProject: Projec
       setQa(qaItems);
       setPolicy(policyItems);
       setArtifacts(artifactItems);
+      setTasks(taskItems);
       setWorkers(workerItems);
+      const briefId = taskItems
+        .map((task) => task.input_json.factory_brief_id)
+        .find((value): value is string => typeof value === "string");
+      setFactoryBrief(briefId ? await api.factoryBrief(briefId).catch(() => null) : null);
     } catch (error) {
       setNotice({ tone: "danger", message: error instanceof ApiError ? error.detail : "Could not refresh project state." });
     } finally {
@@ -153,6 +162,20 @@ export function ProjectDetailClient({ initialProject }: { initialProject: Projec
     }
   }
 
+  async function runTask(task: ProjectTask) {
+    if (runningTaskId) return;
+    setRunningTaskId(task.id);
+    try {
+      const response = await api.runTask(project.id, task.id);
+      feedback.notify({ tone: "success", message: `${task.title} queued on ${response.queue}.` });
+      await load();
+    } catch (error) {
+      feedback.notify({ tone: "danger", message: error instanceof ApiError ? error.detail : "Could not queue task." });
+    } finally {
+      setRunningTaskId(null);
+    }
+  }
+
   const prd = artifacts.find((item) => item.name === "prd.md");
   const hasReadyWorker = workers.some((worker) => worker.status === "online" && worker.has_codex && worker.has_flutter);
   const steps = derivePipelineSteps({ project, events, qa, policy, artifacts });
@@ -189,6 +212,11 @@ export function ProjectDetailClient({ initialProject }: { initialProject: Projec
         </div>
       </div>
       {notice ? <Notice tone={notice.tone}>{notice.message}</Notice> : null}
+      {factoryBrief ? (
+        <Notice tone="neutral">
+          Created from factory brief "{factoryBrief.title}". {factoryBrief.selected_project_id ? "Research, candidate scoring, and task plan are linked below." : "Research is linked below."}
+        </Notice>
+      ) : null}
       {!hasReadyWorker ? (
         <Notice tone="warning">Local worker is offline or missing Codex/Flutter. Run codex login and pnpm dev:worker in a terminal before starting this project pipeline.</Notice>
       ) : null}
@@ -204,6 +232,9 @@ export function ProjectDetailClient({ initialProject }: { initialProject: Projec
         ))}
       </div>
       {active === "Overview" ? <Overview project={project} events={events} qa={qa} policy={policy} artifacts={artifacts} steps={steps} latestFailure={latestFailure} /> : null}
+      {active === "Research" ? <ResearchPanel brief={factoryBrief} /> : null}
+      {active === "Tasks" ? <TasksPanel tasks={tasks} runningTaskId={runningTaskId} onRun={runTask} /> : null}
+      {active === "Code Agent" ? <CodeAgentPanel events={events} tasks={tasks} artifacts={artifacts} /> : null}
       {active === "PRD" ? <PrdPanel prdPath={prd?.path} /> : null}
       {active === "Agent Timeline" ? <Timeline events={events} /> : null}
       {active === "Logs" ? <LogViewer events={events} onClear={clearLogs} /> : null}
@@ -257,6 +288,128 @@ function Overview({
 
 function PrdPanel({ prdPath }: { prdPath?: string }) {
   return <Card><h2 className="mb-2 text-base font-semibold">PRD</h2><p className="text-sm text-muted-foreground">{prdPath ? `Generated at ${prdPath}` : "PRD has not been generated yet."}</p></Card>;
+}
+
+function ResearchPanel({ brief }: { brief: FactoryBriefDetail | null }) {
+  if (!brief) {
+    return <Card><h2 className="mb-2 text-base font-semibold">Research</h2><p className="text-sm text-muted-foreground">This project was not created from a factory brief, or linked research is unavailable.</p></Card>;
+  }
+  const selectedCandidate = brief.candidates.find((candidate) => candidate.status === "selected");
+  return (
+    <div className="space-y-4">
+      <Card>
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <StatusBadge status={brief.status} />
+          <Badge>{brief.mode}</Badge>
+          {selectedCandidate ? <Badge tone="success">selected {selectedCandidate.opportunity_score}/100</Badge> : null}
+        </div>
+        <h2 className="text-base font-semibold">{brief.title}</h2>
+        <p className="mt-1 text-sm text-muted-foreground">{brief.raw_prompt}</p>
+      </Card>
+      <div className="grid gap-4 xl:grid-cols-[0.85fr_1.15fr]">
+        <Card>
+          <h3 className="mb-3 text-sm font-semibold">Findings</h3>
+          <div className="space-y-3">
+            {brief.findings.map((finding) => (
+              <div key={finding.id} className="rounded-md border border-border bg-background p-3">
+                <div className="mb-2 flex flex-wrap items-center gap-2"><Badge>{finding.source}</Badge><Badge>{finding.confidence_score}/100</Badge></div>
+                <div className="font-medium">{finding.title}</div>
+                <p className="mt-1 text-sm text-muted-foreground">{finding.summary}</p>
+              </div>
+            ))}
+            {!brief.findings.length ? <p className="text-sm text-muted-foreground">No research findings yet.</p> : null}
+          </div>
+        </Card>
+        <Card>
+          <h3 className="mb-3 text-sm font-semibold">Candidates</h3>
+          <div className="space-y-3">
+            {brief.candidates.map((candidate) => (
+              <div key={candidate.id} className="rounded-md border border-border bg-background p-3">
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  <Badge tone={candidate.status === "selected" ? "success" : "neutral"}>{candidate.status}</Badge>
+                  <Badge tone={candidate.opportunity_score >= 75 ? "success" : "warning"}>{candidate.opportunity_score}/100</Badge>
+                </div>
+                <div className="font-medium">{candidate.title}</div>
+                <p className="mt-1 text-sm text-muted-foreground">{candidate.description}</p>
+              </div>
+            ))}
+            {!brief.candidates.length ? <p className="text-sm text-muted-foreground">No candidates yet.</p> : null}
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+function TasksPanel({ tasks, runningTaskId, onRun }: { tasks: ProjectTask[]; runningTaskId: string | null; onRun: (task: ProjectTask) => void }) {
+  return (
+    <Table>
+      <thead><tr><Th>Task</Th><Th>Agent</Th><Th>Status</Th><Th>Commit</Th><Th>Updated</Th><Th>Action</Th></tr></thead>
+      <tbody>
+        {tasks.map((task) => (
+          <tr key={task.id}>
+            <Td><div className="font-medium">{task.title}</div><div className="max-w-lg text-xs text-muted-foreground">{task.description}</div>{task.error_message ? <div className="mt-2 text-xs text-red-700">{task.error_message}</div> : null}</Td>
+            <Td><Badge>{task.agent_name}</Badge></Td>
+            <Td><StatusBadge status={task.status} /></Td>
+            <Td>{task.commit_sha ?? "-"}</Td>
+            <Td>{formatDate(task.updated_at)}</Td>
+            <Td>
+              <Button type="button" variant="secondary" onClick={() => onRun(task)} disabled={Boolean(runningTaskId)}>
+                {runningTaskId === task.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play size={15} />}
+                Run
+              </Button>
+            </Td>
+          </tr>
+        ))}
+        {!tasks.length ? <tr><Td className="text-muted-foreground" colSpan={6}>No project tasks yet. Factory-created projects generate a task plan automatically.</Td></tr> : null}
+      </tbody>
+    </Table>
+  );
+}
+
+function CodeAgentPanel({ events, tasks, artifacts }: { events: AgentEvent[]; tasks: ProjectTask[]; artifacts: Artifact[] }) {
+  const codeEvents = events.filter((event) => event.step === "code_agent");
+  const codeTask = tasks.find((task) => task.agent_name === "code_agent");
+  const sourceArtifacts = artifacts.filter((artifact) => artifact.kind === "source");
+  return (
+    <div className="space-y-4">
+      <Card>
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <Badge>code_agent</Badge>
+          {codeTask ? <StatusBadge status={codeTask.status} /> : null}
+          {codeTask?.commit_sha ? <Badge>{codeTask.commit_sha}</Badge> : null}
+        </div>
+        <h2 className="text-base font-semibold">Code Agent State</h2>
+        <p className="mt-1 text-sm text-muted-foreground">{codeTask?.description ?? "The code agent copies the Flutter template, customizes app content, optionally runs Codex CLI, and records source artifacts."}</p>
+      </Card>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card>
+          <h3 className="mb-3 text-sm font-semibold">Source Artifacts</h3>
+          <div className="space-y-2">
+            {sourceArtifacts.map((artifact) => (
+              <div key={artifact.id} className="rounded-md border border-border bg-background p-3">
+                <div className="font-medium">{artifact.name}</div>
+                <div className="max-w-xl truncate text-xs text-muted-foreground">{artifact.path}</div>
+              </div>
+            ))}
+            {!sourceArtifacts.length ? <p className="text-sm text-muted-foreground">No source artifacts yet.</p> : null}
+          </div>
+        </Card>
+        <Card>
+          <h3 className="mb-3 text-sm font-semibold">Recent Code Events</h3>
+          <div className="space-y-3">
+            {codeEvents.map((event) => (
+              <div key={event.id} className="rounded-md border border-border bg-background p-3">
+                <div className="mb-1 flex flex-wrap items-center gap-2"><Badge tone={event.level === "warning" ? "warning" : event.level === "error" ? "danger" : "neutral"}>{event.level}</Badge><span className="text-xs text-muted-foreground">{formatDate(event.created_at)}</span></div>
+                <div className="text-sm">{event.message}</div>
+              </div>
+            ))}
+            {!codeEvents.length ? <p className="text-sm text-muted-foreground">No code agent events yet.</p> : null}
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
 }
 
 function Timeline({ events }: { events: AgentEvent[] }) {

@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://factory:factory@localhost:5432/factory"
     redis_url: str = "redis://localhost:6379/0"
     pipeline_queue_name: str = "project_pipeline"
+    factory_brief_queue_name: str = "factory_brief_queue"
     worker_stale_seconds: int = 60
     factory_secret_key: str = Field(default="")
     local_artifact_root: str = "workspaces"

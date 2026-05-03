@@ -52,16 +52,20 @@ from app.schemas import (
     BuildCreate,
     DoctorCheck,
     DoctorResponse,
-    FactoryStatePatch,
-    FactoryState as FactoryStateSchema,
+    FactoryBriefFinalizeRequest,
     FactoryBriefCreate,
     FactoryBriefDetail,
     FactoryBriefRead,
+    FactoryBriefRunResponse,
+    FactoryBriefStatusPatch,
+    FactoryStatePatch,
+    FactoryState as FactoryStateSchema,
     HealthResponse,
     IdeaCreate,
     IdeaRead,
     NotificationCreate,
     NotificationRead,
+    OpportunityCandidateCreate,
     OpportunityCandidateRead,
     PipelineRunResponse,
     PolicyResultCreate,
@@ -69,11 +73,13 @@ from app.schemas import (
     ProjectCreate,
     ProjectRead,
     ProjectStatusPatch,
+    ProjectTaskAgentPatch,
     ProjectTaskCreate,
     ProjectTaskPatch,
     ProjectTaskRead,
     QAResultCreate,
     QAResultRead,
+    ResearchFindingCreate,
     ResearchFindingRead,
     WorkerHeartbeat,
     WorkerRead,
@@ -222,6 +228,47 @@ def create_notification(
     return notification
 
 
+def slugify(value: str) -> str:
+    chars: list[str] = []
+    previous_dash = False
+    for char in value.strip().lower():
+        if char.isalnum():
+            chars.append(char)
+            previous_dash = False
+        elif not previous_dash:
+            chars.append("-")
+            previous_dash = True
+    slug = "".join(chars).strip("-")
+    return slug or "factory-app"
+
+
+def unique_project_slug(db: Session, base: str) -> str:
+    slug = slugify(base)
+    candidate = slug
+    suffix = 2
+    while db.scalar(select(Project).where(Project.slug == candidate)):
+        candidate = f"{slug}-{suffix}"
+        suffix += 1
+    return candidate
+
+
+def build_brief_detail(db: Session, brief: FactoryBrief) -> FactoryBriefDetail:
+    findings = list(db.scalars(select(ResearchFinding).where(ResearchFinding.factory_brief_id == brief.id).order_by(desc(ResearchFinding.created_at))).all())
+    candidates = list(
+        db.scalars(
+            select(OpportunityCandidate)
+            .where(OpportunityCandidate.factory_brief_id == brief.id)
+            .order_by(desc(OpportunityCandidate.opportunity_score), desc(OpportunityCandidate.created_at))
+        ).all()
+    )
+    return FactoryBriefDetail.model_validate(brief).model_copy(
+        update={
+            "findings": [ResearchFindingRead.model_validate(item) for item in findings],
+            "candidates": [OpportunityCandidateRead.model_validate(item) for item in candidates],
+        }
+    )
+
+
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse(status="ok", service="forge-trend-api")
@@ -276,6 +323,219 @@ def update_factory_state(payload: FactoryStatePatch, db: Session = Depends(get_d
     db.commit()
     db.refresh(item)
     return item
+
+
+@app.post("/factory-briefs", response_model=FactoryBriefRead)
+def create_factory_brief(payload: FactoryBriefCreate, db: Session = Depends(get_db)) -> FactoryBrief:
+    item = FactoryBrief(**payload.model_dump(), status="draft")
+    db.add(item)
+    db.flush()
+    create_notification(
+        db,
+        level="info",
+        title="Factory brief created",
+        message=f"{item.title} is ready to start.",
+        entity_type="factory_brief",
+        entity_id=item.id,
+    )
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@app.get("/factory-briefs", response_model=list[FactoryBriefRead])
+def list_factory_briefs(db: Session = Depends(get_db)) -> list[FactoryBrief]:
+    return list(db.scalars(select(FactoryBrief).order_by(desc(FactoryBrief.created_at))).all())
+
+
+@app.get("/factory-briefs/{id}", response_model=FactoryBriefDetail)
+def get_factory_brief(id: UUID, db: Session = Depends(get_db)) -> FactoryBriefDetail:
+    brief = get_or_404(db, FactoryBrief, id)
+    return build_brief_detail(db, brief)
+
+
+@app.post("/factory-briefs/{id}/start", response_model=FactoryBriefRunResponse)
+def start_factory_brief(id: UUID, db: Session = Depends(get_db)) -> FactoryBriefRunResponse:
+    factory = get_or_create_factory_state(db)
+    if factory.mode != "running":
+        raise HTTPException(status_code=409, detail=f"Factory is {factory.mode}. Start it before queueing factory briefs.")
+    brief = get_or_404(db, FactoryBrief, id)
+    brief.status = "queued"
+    queue = enqueue_factory_brief(brief.id)
+    create_notification(
+        db,
+        level="info",
+        title="Factory brief queued",
+        message=f"{brief.title} was queued for autonomous research and project creation.",
+        entity_type="factory_brief",
+        entity_id=brief.id,
+    )
+    db.commit()
+    return FactoryBriefRunResponse(factory_brief_id=brief.id, status=brief.status, queue=queue)
+
+
+@app.patch("/internal/factory-briefs/{id}/status", response_model=FactoryBriefRead)
+def patch_factory_brief_status(id: UUID, payload: FactoryBriefStatusPatch, db: Session = Depends(get_db)) -> FactoryBrief:
+    brief = get_or_404(db, FactoryBrief, id)
+    brief.status = payload.status
+    db.commit()
+    db.refresh(brief)
+    return brief
+
+
+@app.post("/internal/factory-briefs/{id}/findings", response_model=ResearchFindingRead)
+def create_research_finding(id: UUID, payload: ResearchFindingCreate, db: Session = Depends(get_db)) -> ResearchFinding:
+    get_or_404(db, FactoryBrief, id)
+    finding = ResearchFinding(factory_brief_id=id, **payload.model_dump())
+    db.add(finding)
+    db.commit()
+    db.refresh(finding)
+    return finding
+
+
+@app.get("/factory-briefs/{id}/findings", response_model=list[ResearchFindingRead])
+def list_research_findings(id: UUID, db: Session = Depends(get_db)) -> list[ResearchFinding]:
+    get_or_404(db, FactoryBrief, id)
+    return list(db.scalars(select(ResearchFinding).where(ResearchFinding.factory_brief_id == id).order_by(desc(ResearchFinding.created_at))).all())
+
+
+@app.post("/internal/factory-briefs/{id}/candidates", response_model=OpportunityCandidateRead)
+def create_opportunity_candidate(id: UUID, payload: OpportunityCandidateCreate, db: Session = Depends(get_db)) -> OpportunityCandidate:
+    get_or_404(db, FactoryBrief, id)
+    candidate = OpportunityCandidate(factory_brief_id=id, **payload.model_dump())
+    db.add(candidate)
+    db.commit()
+    db.refresh(candidate)
+    return candidate
+
+
+@app.post("/internal/factory-briefs/{id}/finalize", response_model=PipelineRunResponse)
+def finalize_factory_brief_internal(id: UUID, payload: FactoryBriefFinalizeRequest, db: Session = Depends(get_db)) -> PipelineRunResponse:
+    return finalize_factory_brief(id, payload, db)
+
+
+@app.get("/factory-briefs/{id}/candidates", response_model=list[OpportunityCandidateRead])
+def list_opportunity_candidates(id: UUID, db: Session = Depends(get_db)) -> list[OpportunityCandidate]:
+    get_or_404(db, FactoryBrief, id)
+    return list(
+        db.scalars(
+            select(OpportunityCandidate)
+            .where(OpportunityCandidate.factory_brief_id == id)
+            .order_by(desc(OpportunityCandidate.opportunity_score), desc(OpportunityCandidate.created_at))
+        ).all()
+    )
+
+
+@app.post("/factory-briefs/{id}/finalize", response_model=PipelineRunResponse)
+def finalize_factory_brief(id: UUID, payload: FactoryBriefFinalizeRequest, db: Session = Depends(get_db)) -> PipelineRunResponse:
+    factory = get_or_create_factory_state(db)
+    if payload.queue_pipeline and factory.mode != "running":
+        raise HTTPException(status_code=409, detail=f"Factory is {factory.mode}. Start it before queueing pipeline runs.")
+    brief = get_or_404(db, FactoryBrief, id)
+    candidate = get_or_404(db, OpportunityCandidate, payload.candidate_id)
+    if candidate.factory_brief_id != brief.id:
+        raise HTTPException(status_code=422, detail="Candidate does not belong to this factory brief")
+    if brief.selected_project_id:
+        project = get_or_404(db, Project, brief.selected_project_id)
+        queue = "already_created"
+        if payload.queue_pipeline:
+            project.status = "queued"
+            queue = enqueue_pipeline(project.id)
+            db.add(AgentEvent(project_id=project.id, step="factory_brief", level="info", message="Existing factory project queued again"))
+        db.commit()
+        return PipelineRunResponse(project_id=project.id, status=project.status, queue=queue)
+
+    idea = Idea(
+        title=candidate.title,
+        description=f"{candidate.description}\n\nTarget user: {candidate.target_user}\nProblem: {candidate.problem}\nUnique angle: {candidate.unique_angle}",
+        source="factory",
+        opportunity_score=candidate.opportunity_score,
+        status="selected",
+        evidence_json={
+            "factory_brief_id": str(brief.id),
+            "candidate_id": str(candidate.id),
+            "core_features": candidate.core_features,
+            "scores": {
+                "demand": candidate.demand_score,
+                "pain": candidate.pain_score,
+                "monetization": candidate.monetization_score,
+                "feasibility": candidate.build_feasibility_score,
+                "differentiation": candidate.differentiation_score,
+                "policy_risk": candidate.policy_risk_score,
+                "originality": candidate.originality_score,
+            },
+        },
+    )
+    db.add(idea)
+    db.flush()
+
+    project = Project(
+        idea_id=idea.id,
+        name=candidate.title,
+        slug=unique_project_slug(db, candidate.title),
+        target_platforms=brief.target_platforms,
+        status="queued" if payload.queue_pipeline else "created",
+    )
+    db.add(project)
+    db.flush()
+
+    task_specs = [
+        (
+            "Translate selected opportunity into PRD",
+            "Use the selected candidate, research findings, monetization constraints, and policy strictness to produce the project PRD.",
+            "prd_agent",
+        ),
+        (
+            "Design mobile product flow",
+            "Create the screen flow, visual direction, onboarding, home, settings, empty states, and error states for the target user.",
+            "ux_agent",
+        ),
+        (
+            "Implement Flutter MVP",
+            "Customize the Flutter app from the PRD and design docs, then record source artifacts.",
+            "code_agent",
+        ),
+        (
+            "Run QA and repair loop",
+            "Run Flutter dependency, analyze, test, and debug build checks, then trigger code fixes if needed.",
+            "qa_agent",
+        ),
+        (
+            "Run release policy gate",
+            "Check naming, privacy, permissions, secrets, and release readiness before creating a release candidate.",
+            "policy_agent",
+        ),
+    ]
+    for priority, (title, description, agent_name) in enumerate(task_specs, start=10):
+        db.add(
+            ProjectTask(
+                project_id=project.id,
+                title=title,
+                description=description,
+                agent_name=agent_name,
+                priority=priority,
+                input_json={"factory_brief_id": str(brief.id), "candidate_id": str(candidate.id)},
+            )
+        )
+
+    candidate.status = "selected"
+    brief.status = "project_queued" if payload.queue_pipeline else "project_created"
+    brief.selected_idea_id = idea.id
+    brief.selected_project_id = project.id
+    create_notification(
+        db,
+        level="success",
+        title="Factory project created",
+        message=f"{project.name} was created from {brief.title}.",
+        entity_type="project",
+        entity_id=project.id,
+    )
+    queue = "not_queued"
+    if payload.queue_pipeline:
+        queue = enqueue_pipeline(project.id)
+        db.add(AgentEvent(project_id=project.id, step="factory_brief", level="info", message="Project created from factory brief and pipeline queued"))
+    db.commit()
+    return PipelineRunResponse(project_id=project.id, status=project.status, queue=queue)
 
 
 @app.post("/api-keys", response_model=ApiKeyRead)
@@ -443,8 +703,9 @@ def get_project(id: UUID, db: Session = Depends(get_db)) -> Project:
 @app.delete("/projects/{id}", response_model=ActionResponse)
 def delete_project(id: UUID, db: Session = Depends(get_db)) -> ActionResponse:
     project = get_or_404(db, Project, id)
+    db.query(FactoryBrief).filter(FactoryBrief.selected_project_id == id).update({FactoryBrief.selected_project_id: None}, synchronize_session=False)
     db.query(CostUsage).filter(CostUsage.project_id == id).delete(synchronize_session=False)
-    for model in [Artifact, Build, PolicyResult, QAResult, AgentEvent, AgentRun]:
+    for model in [ProjectTask, Artifact, Build, PolicyResult, QAResult, AgentEvent, AgentRun]:
         db.query(model).filter(model.project_id == id).delete(synchronize_session=False)
     db.delete(project)
     db.commit()
@@ -453,7 +714,7 @@ def delete_project(id: UUID, db: Session = Depends(get_db)) -> ActionResponse:
 
 @app.post("/projects/{id}/run-pipeline", response_model=PipelineRunResponse)
 def run_pipeline(id: UUID, db: Session = Depends(get_db)) -> PipelineRunResponse:
-    factory = get_factory_state()
+    factory = get_or_create_factory_state(db)
     if factory.mode != "running":
         raise HTTPException(status_code=409, detail=f"Factory is {factory.mode}. Start it before queueing pipeline runs.")
     project = get_or_404(db, Project, id)
@@ -461,13 +722,14 @@ def run_pipeline(id: UUID, db: Session = Depends(get_db)) -> PipelineRunResponse
     queue = enqueue_pipeline(project.id)
     event = AgentEvent(project_id=project.id, step="pipeline", level="info", message="Pipeline queued")
     db.add(event)
+    create_notification(db, level="info", title="Pipeline queued", message=f"{project.name} was queued.", entity_type="project", entity_id=project.id)
     db.commit()
     return PipelineRunResponse(project_id=project.id, status=project.status, queue=queue)
 
 
 @app.post("/projects/{id}/retry", response_model=PipelineRunResponse)
 def retry_pipeline(id: UUID, db: Session = Depends(get_db)) -> PipelineRunResponse:
-    factory = get_factory_state()
+    factory = get_or_create_factory_state(db)
     if factory.mode != "running":
         raise HTTPException(status_code=409, detail=f"Factory is {factory.mode}. Start it before queueing pipeline runs.")
     project = get_or_404(db, Project, id)
@@ -475,6 +737,7 @@ def retry_pipeline(id: UUID, db: Session = Depends(get_db)) -> PipelineRunRespon
     queue = enqueue_pipeline(project.id)
     event = AgentEvent(project_id=project.id, step="pipeline", level="info", message="Retry requested and pipeline queued")
     db.add(event)
+    create_notification(db, level="info", title="Retry queued", message=f"{project.name} was queued again.", entity_type="project", entity_id=project.id)
     db.commit()
     return PipelineRunResponse(project_id=project.id, status=project.status, queue=queue)
 
@@ -492,6 +755,53 @@ def stop_pipeline(id: UUID, db: Session = Depends(get_db)) -> ActionResponse:
     db.add(event)
     db.commit()
     return ActionResponse(status="stop_requested", detail="Stop requested for this project")
+
+
+@app.get("/projects/{id}/tasks", response_model=list[ProjectTaskRead])
+def list_project_tasks(id: UUID, db: Session = Depends(get_db)) -> list[ProjectTask]:
+    get_or_404(db, Project, id)
+    return list(db.scalars(select(ProjectTask).where(ProjectTask.project_id == id).order_by(ProjectTask.priority, ProjectTask.created_at)).all())
+
+
+@app.post("/projects/{id}/tasks", response_model=ProjectTaskRead)
+def create_project_task(id: UUID, payload: ProjectTaskCreate, db: Session = Depends(get_db)) -> ProjectTask:
+    get_or_404(db, Project, id)
+    task = ProjectTask(project_id=id, **payload.model_dump())
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    return task
+
+
+@app.patch("/projects/{project_id}/tasks/{task_id}", response_model=ProjectTaskRead)
+def patch_project_task(project_id: UUID, task_id: UUID, payload: ProjectTaskPatch, db: Session = Depends(get_db)) -> ProjectTask:
+    get_or_404(db, Project, project_id)
+    task = get_or_404(db, ProjectTask, task_id)
+    if task.project_id != project_id:
+        raise HTTPException(status_code=404, detail="ProjectTask not found")
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(task, field, value)
+    db.commit()
+    db.refresh(task)
+    return task
+
+
+@app.post("/projects/{project_id}/tasks/{task_id}/run", response_model=PipelineRunResponse)
+def run_project_task(project_id: UUID, task_id: UUID, db: Session = Depends(get_db)) -> PipelineRunResponse:
+    factory = get_or_create_factory_state(db)
+    if factory.mode != "running":
+        raise HTTPException(status_code=409, detail=f"Factory is {factory.mode}. Start it before queueing task runs.")
+    project = get_or_404(db, Project, project_id)
+    task = get_or_404(db, ProjectTask, task_id)
+    if task.project_id != project.id:
+        raise HTTPException(status_code=404, detail="ProjectTask not found")
+    task.status = "queued"
+    project.status = "queued"
+    queue = enqueue_pipeline(project.id)
+    db.add(AgentEvent(project_id=project.id, step=task.agent_name, level="info", message=f"Task queued: {task.title}", metadata_json={"task_id": str(task.id)}))
+    create_notification(db, level="info", title="Task queued", message=f"{task.title} queued for {project.name}.", entity_type="project_task", entity_id=task.id)
+    db.commit()
+    return PipelineRunResponse(project_id=project.id, status=project.status, queue=queue)
 
 
 @app.get("/projects/{id}/events", response_model=list[AgentEventRead])
@@ -544,6 +854,46 @@ def list_project_policy(id: UUID, db: Session = Depends(get_db)) -> list[PolicyR
 def list_project_artifacts(id: UUID, db: Session = Depends(get_db)) -> list[Artifact]:
     get_or_404(db, Project, id)
     return list(db.scalars(select(Artifact).where(Artifact.project_id == id).order_by(desc(Artifact.created_at))).all())
+
+
+@app.post("/notifications", response_model=NotificationRead)
+def create_user_notification(payload: NotificationCreate, db: Session = Depends(get_db)) -> Notification:
+    notification = create_notification(
+        db,
+        level=payload.level,
+        title=payload.title,
+        message=payload.message,
+        entity_type=payload.entity_type,
+        entity_id=payload.entity_id,
+    )
+    db.commit()
+    db.refresh(notification)
+    return notification
+
+
+@app.get("/notifications", response_model=list[NotificationRead])
+def list_notifications(limit: int = 50, unread_only: bool = False, db: Session = Depends(get_db)) -> list[Notification]:
+    query = select(Notification)
+    if unread_only:
+        query = query.where(Notification.read_at.is_(None))
+    query = query.order_by(desc(Notification.created_at)).limit(min(max(limit, 1), 200))
+    return list(db.scalars(query).all())
+
+
+@app.post("/notifications/{id}/read", response_model=NotificationRead)
+def mark_notification_read(id: UUID, db: Session = Depends(get_db)) -> Notification:
+    notification = get_or_404(db, Notification, id)
+    notification.read_at = notification.read_at or datetime.now(UTC)
+    db.commit()
+    db.refresh(notification)
+    return notification
+
+
+@app.post("/notifications/read-all", response_model=ActionResponse)
+def mark_all_notifications_read(db: Session = Depends(get_db)) -> ActionResponse:
+    updated = db.query(Notification).filter(Notification.read_at.is_(None)).update({Notification.read_at: datetime.now(UTC)}, synchronize_session=False)
+    db.commit()
+    return ActionResponse(status="read", detail=f"Marked {updated} notification(s) as read")
 
 
 @app.post("/internal/projects/{id}/agent-runs", response_model=AgentRunRead)
@@ -622,6 +972,16 @@ def create_artifact(id: UUID, payload: ArtifactCreate, db: Session = Depends(get
     db.commit()
     db.refresh(artifact)
     return artifact
+
+
+@app.patch("/internal/project-tasks/{id}", response_model=ProjectTaskRead)
+def patch_project_task_internal(id: UUID, payload: ProjectTaskAgentPatch, db: Session = Depends(get_db)) -> ProjectTask:
+    task = get_or_404(db, ProjectTask, id)
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(task, field, value)
+    db.commit()
+    db.refresh(task)
+    return task
 
 
 @app.post("/internal/projects/{id}/builds")

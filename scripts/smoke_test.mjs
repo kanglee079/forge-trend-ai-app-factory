@@ -39,6 +39,16 @@ await check("Factory state endpoint", async () => {
   return body.mode;
 });
 
+await check("Factory briefs endpoint", async () => {
+  const body = await fetchJson("/factory-briefs");
+  return `${body.length} brief(s)`;
+});
+
+await check("Notifications endpoint", async () => {
+  const body = await fetchJson("/notifications?limit=5");
+  return `${body.length} notification(s)`;
+});
+
 await check("API keys endpoint", async () => {
   const body = await fetchJson("/api-keys");
   return `${body.length} key(s)`;

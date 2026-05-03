@@ -40,11 +40,17 @@ export type DoctorResponse = {
 };
 
 export type FactoryState = {
+  id: string;
   mode: "running" | "paused" | "stopped";
+  auto_trend_enabled: boolean;
+  active_project_limit: number;
+  daily_budget_usd: string;
+  monthly_budget_usd: string;
   updated_at: string;
 };
 
 export type AppSettings = {
+  id: string;
   default_provider: string;
   default_model: string;
   max_fix_iterations: number;
@@ -54,6 +60,12 @@ export type AppSettings = {
   theme: string;
   daily_budget_usd: string;
   monthly_budget_usd: string;
+  default_platforms: string[];
+  default_backend: string;
+  default_monetization: string;
+  default_language: string;
+  default_target_country: string;
+  policy_strictness: string;
   feature_flags: Record<string, boolean>;
   updated_at: string;
 };
@@ -97,6 +109,105 @@ export type Project = {
   workspace_path: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type ResearchFinding = {
+  id: string;
+  factory_brief_id: string;
+  source: string;
+  title: string;
+  summary: string;
+  category: string | null;
+  keywords: string[];
+  pain_points: string[];
+  competitor_gaps: string[];
+  evidence_json: Record<string, unknown>;
+  confidence_score: number;
+  created_at: string;
+};
+
+export type OpportunityCandidate = {
+  id: string;
+  factory_brief_id: string;
+  title: string;
+  description: string;
+  target_user: string;
+  problem: string;
+  unique_angle: string;
+  core_features: string[];
+  monetization_plan: string | null;
+  iap_plan_json: Record<string, unknown>;
+  subscription_plan_json: Record<string, unknown>;
+  backend_plan_json: Record<string, unknown>;
+  opportunity_score: number;
+  demand_score: number;
+  pain_score: number;
+  monetization_score: number;
+  build_feasibility_score: number;
+  differentiation_score: number;
+  policy_risk_score: number;
+  originality_score: number;
+  status: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type FactoryBrief = {
+  id: string;
+  mode: string;
+  title: string;
+  raw_prompt: string;
+  target_category: string | null;
+  target_platforms: string[];
+  target_country: string;
+  target_language: string;
+  monetization_mode: string;
+  iap_enabled: boolean;
+  subscription_enabled: boolean;
+  ads_enabled: boolean;
+  backend_mode: string;
+  complexity: string;
+  max_cost_usd: string;
+  max_runtime_minutes: number;
+  quality_threshold: number;
+  policy_strictness: string;
+  status: string;
+  selected_idea_id: string | null;
+  selected_project_id: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type FactoryBriefDetail = FactoryBrief & {
+  findings: ResearchFinding[];
+  candidates: OpportunityCandidate[];
+};
+
+export type ProjectTask = {
+  id: string;
+  project_id: string;
+  title: string;
+  description: string;
+  agent_name: string;
+  status: string;
+  priority: number;
+  input_json: Record<string, unknown>;
+  output_json: Record<string, unknown>;
+  error_message: string | null;
+  commit_sha: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type Notification = {
+  id: string;
+  level: "success" | "warning" | "danger" | "info" | string;
+  title: string;
+  message: string;
+  entity_type: string | null;
+  entity_id: string | null;
+  read_at: string | null;
+  created_at: string;
 };
 
 export type AgentEvent = {
@@ -196,6 +307,15 @@ export const api = {
   updateSettings: (body: unknown) => request<AppSettings>("/settings", { method: "PATCH", body: JSON.stringify(body) }),
   factoryState: () => request<FactoryState>("/factory/state"),
   updateFactoryState: (mode: FactoryState["mode"]) => request<FactoryState>("/factory/state", { method: "PATCH", body: JSON.stringify({ mode }) }),
+  factoryBriefs: () => request<FactoryBrief[]>("/factory-briefs"),
+  factoryBrief: (id: string) => request<FactoryBriefDetail>(`/factory-briefs/${id}`),
+  createFactoryBrief: (body: unknown) => request<FactoryBrief>("/factory-briefs", { method: "POST", body: JSON.stringify(body) }),
+  startFactoryBrief: (id: string) => request<{ factory_brief_id: string; status: string; queue: string }>(`/factory-briefs/${id}/start`, { method: "POST" }),
+  finalizeFactoryBrief: (id: string, candidateId: string, queuePipeline = true) =>
+    request<{ project_id: string; status: string; queue: string }>(`/factory-briefs/${id}/finalize`, {
+      method: "POST",
+      body: JSON.stringify({ candidate_id: candidateId, queue_pipeline: queuePipeline })
+    }),
   apiKeys: () => request<ApiKey[]>("/api-keys"),
   createApiKey: (body: unknown) => request<ApiKey>("/api-keys", { method: "POST", body: JSON.stringify(body) }),
   updateApiKey: (id: string, body: unknown) => request<ApiKey>(`/api-keys/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
@@ -211,6 +331,12 @@ export const api = {
   runPipeline: (id: string) => request<{ project_id: string; status: string; queue: string }>(`/projects/${id}/run-pipeline`, { method: "POST" }),
   retryPipeline: (id: string) => request<{ project_id: string; status: string; queue: string }>(`/projects/${id}/retry`, { method: "POST" }),
   stopPipeline: (id: string) => request<ActionResponse>(`/projects/${id}/stop`, { method: "POST" }),
+  tasks: (id: string) => request<ProjectTask[]>(`/projects/${id}/tasks`),
+  createTask: (id: string, body: unknown) => request<ProjectTask>(`/projects/${id}/tasks`, { method: "POST", body: JSON.stringify(body) }),
+  updateTask: (projectId: string, taskId: string, body: unknown) =>
+    request<ProjectTask>(`/projects/${projectId}/tasks/${taskId}`, { method: "PATCH", body: JSON.stringify(body) }),
+  runTask: (projectId: string, taskId: string) =>
+    request<{ project_id: string; status: string; queue: string }>(`/projects/${projectId}/tasks/${taskId}/run`, { method: "POST" }),
   allEvents: (params?: { project_id?: string; level?: string; search?: string; limit?: number }) => {
     const search = new URLSearchParams();
     if (params?.project_id) search.set("project_id", params.project_id);
@@ -224,5 +350,8 @@ export const api = {
   clearEvents: (id: string) => request<ActionResponse>(`/projects/${id}/events`, { method: "DELETE" }),
   qa: (id: string) => request<QAResult[]>(`/projects/${id}/qa`),
   policy: (id: string) => request<PolicyResult[]>(`/projects/${id}/policy`),
-  artifacts: (id: string) => request<Artifact[]>(`/projects/${id}/artifacts`)
+  artifacts: (id: string) => request<Artifact[]>(`/projects/${id}/artifacts`),
+  notifications: (limit = 50) => request<Notification[]>(`/notifications?limit=${limit}`),
+  markNotificationRead: (id: string) => request<Notification>(`/notifications/${id}/read`, { method: "POST" }),
+  markAllNotificationsRead: () => request<ActionResponse>("/notifications/read-all", { method: "POST" })
 };

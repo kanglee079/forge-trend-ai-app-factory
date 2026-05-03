@@ -28,8 +28,33 @@ class FactoryApi:
     def app_settings(self) -> dict[str, Any]:
         return self._request("GET", "/settings")
 
+    def get_factory_brief(self, brief_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/factory-briefs/{brief_id}")
+
+    def set_factory_brief_status(self, brief_id: str, status: str) -> dict[str, Any]:
+        return self._request("PATCH", f"/internal/factory-briefs/{brief_id}/status", json={"status": status})
+
+    def research_finding(self, brief_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", f"/internal/factory-briefs/{brief_id}/findings", json=payload)
+
+    def opportunity_candidate(self, brief_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", f"/internal/factory-briefs/{brief_id}/candidates", json=payload)
+
+    def finalize_factory_brief(self, brief_id: str, candidate_id: str, queue_pipeline: bool = True) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/internal/factory-briefs/{brief_id}/finalize",
+            json={"candidate_id": candidate_id, "queue_pipeline": queue_pipeline},
+        )
+
     def set_project_status(self, project_id: str, status: str, workspace_path: str | None = None) -> dict[str, Any]:
         return self._request("PATCH", f"/internal/projects/{project_id}/status", json={"status": status, "workspace_path": workspace_path})
+
+    def list_project_tasks(self, project_id: str) -> list[dict[str, Any]]:
+        return self._request("GET", f"/projects/{project_id}/tasks")
+
+    def update_project_task(self, task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("PATCH", f"/internal/project-tasks/{task_id}", json=payload)
 
     def start_run(self, project_id: str, agent_name: str, input_json: dict[str, Any], iteration: int = 0) -> dict[str, Any]:
         return self._request(

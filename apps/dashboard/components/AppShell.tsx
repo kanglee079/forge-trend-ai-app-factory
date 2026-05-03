@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { Activity, CheckCircle2, FileText, KeyRound, LayoutDashboard, Lightbulb, Moon, Server, Settings, Stethoscope, Smartphone, Sun } from "lucide-react";
+import { Activity, Bot, CheckCircle2, FileText, KeyRound, LayoutDashboard, Lightbulb, Moon, Server, Settings, Stethoscope, Smartphone, Sun } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { FeedbackProvider } from "@/components/feedback";
@@ -12,6 +12,7 @@ import { Badge, Button } from "@/components/ui";
 
 const navItems = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
+  { href: "/factory", label: "Factory", icon: Bot },
   { href: "/doctor", label: "Doctor", icon: Stethoscope },
   { href: "/api-keys", label: "API Keys", icon: KeyRound },
   { href: "/workers", label: "Workers", icon: Server },
