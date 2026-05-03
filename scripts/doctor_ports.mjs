@@ -41,7 +41,7 @@ function pidsForPort(port) {
 
 async function httpStatus(url) {
   try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(1500) });
+    const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
     return { status: response.status, ok: response.ok, text: await response.text().catch(() => "") };
   } catch (error) {
     return { status: 0, ok: false, text: error instanceof Error ? error.message : String(error) };

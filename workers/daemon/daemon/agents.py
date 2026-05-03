@@ -685,6 +685,7 @@ void main() {
     await tester.pumpAndSettle();
 
     if (AppContent.subscriptionEnabled) {
+      await tester.scrollUntilVisible(find.text('Premium'), 120);
       expect(find.text('Premium'), findsOneWidget);
     }
   });
