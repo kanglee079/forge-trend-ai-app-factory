@@ -13,3 +13,10 @@ def enqueue_pipeline(project_id: UUID) -> str:
     payload = {"project_id": str(project_id)}
     redis_client.rpush(settings.pipeline_queue_name, json.dumps(payload))
     return settings.pipeline_queue_name
+
+
+def enqueue_factory_brief(brief_id: UUID) -> str:
+    queue_name = "factory_brief_queue"
+    payload = {"factory_brief_id": str(brief_id)}
+    redis_client.rpush(queue_name, json.dumps(payload))
+    return queue_name

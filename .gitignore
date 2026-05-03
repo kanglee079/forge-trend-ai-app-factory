@@ -9,6 +9,7 @@ build/
 coverage/
 .turbo/
 .runtime/
+*.tsbuildinfo
 
 __pycache__/
 *.py[cod]

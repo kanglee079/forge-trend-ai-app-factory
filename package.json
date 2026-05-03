@@ -11,8 +11,9 @@
     "dev:worker": "node scripts/venv-run.mjs workers/daemon -m daemon.main",
     "desktop": "pnpm --filter @forge/desktop start",
     "setup:python": "node scripts/setup-python.mjs",
-    "build": "pnpm --filter @forge/dashboard build && pnpm --filter @forge/shared build",
+    "build": "pnpm --filter @forge/shared build && pnpm --filter @forge/dashboard build",
     "lint": "pnpm --filter @forge/dashboard lint",
+    "smoke": "node scripts/smoke_test.mjs",
     "db:migrate": "node scripts/venv-run.mjs services/api -m alembic upgrade head",
     "doctor": "node scripts/venv-run.mjs . scripts/doctor.py"
   }

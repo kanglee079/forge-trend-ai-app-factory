@@ -15,18 +15,25 @@ from app.db import get_db
 from app.models import (
     AgentEvent,
     AgentRun,
+    AppSettings,
     ApiKey,
     Artifact,
     Build,
     CostUsage,
+    FactoryBrief,
+    FactoryState,
     Idea,
+    Notification,
+    OpportunityCandidate,
     PolicyResult,
     Project,
+    ProjectTask,
     QAResult,
+    ResearchFinding,
+    TrendSource,
     Worker,
 )
-from app.queue import enqueue_pipeline
-from app.runtime_state import get_app_settings, get_factory_state, patch_app_settings, patch_factory_state
+from app.queue import enqueue_factory_brief, enqueue_pipeline
 from app.schemas import (
     ActionResponse,
     AgentEventCreate,
@@ -38,26 +45,36 @@ from app.schemas import (
     ApiKeyPatch,
     ApiKeyRead,
     ApiKeyTestResponse,
-    AppSettings,
     AppSettingsPatch,
+    AppSettings as AppSettingsSchema,
     ArtifactCreate,
     ArtifactRead,
     BuildCreate,
     DoctorCheck,
     DoctorResponse,
-    FactoryState,
     FactoryStatePatch,
+    FactoryState as FactoryStateSchema,
+    FactoryBriefCreate,
+    FactoryBriefDetail,
+    FactoryBriefRead,
     HealthResponse,
     IdeaCreate,
     IdeaRead,
+    NotificationCreate,
+    NotificationRead,
+    OpportunityCandidateRead,
     PipelineRunResponse,
     PolicyResultCreate,
     PolicyResultRead,
     ProjectCreate,
     ProjectRead,
     ProjectStatusPatch,
+    ProjectTaskCreate,
+    ProjectTaskPatch,
+    ProjectTaskRead,
     QAResultCreate,
     QAResultRead,
+    ResearchFindingRead,
     WorkerHeartbeat,
     WorkerRead,
     WorkerRegister,
@@ -162,6 +179,49 @@ def build_doctor_report(db: Session) -> DoctorResponse:
     return DoctorResponse(status=status, generated_at=datetime.now(UTC), checks=checks)
 
 
+def get_or_create_factory_state(db: Session) -> FactoryState:
+    item = db.scalar(select(FactoryState).order_by(FactoryState.updated_at))
+    if item:
+        return item
+    item = FactoryState()
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+def get_or_create_app_settings(db: Session) -> AppSettings:
+    item = db.scalar(select(AppSettings).order_by(AppSettings.updated_at))
+    if item:
+        return item
+    item = AppSettings(
+        feature_flags={
+            "trend_radar": False,
+            "provider_key_network_test": False,
+            "minio_artifacts": False,
+            "release_approval": False,
+        }
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+def create_notification(
+    db: Session,
+    *,
+    level: str,
+    title: str,
+    message: str,
+    entity_type: str | None = None,
+    entity_id: UUID | None = None,
+) -> Notification:
+    notification = Notification(level=level, title=title, message=redact(message) or "", entity_type=entity_type, entity_id=entity_id)
+    db.add(notification)
+    return notification
+
+
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse(status="ok", service="forge-trend-api")
@@ -172,27 +232,50 @@ def doctor(db: Session = Depends(get_db)) -> DoctorResponse:
     return build_doctor_report(db)
 
 
-@app.get("/settings", response_model=AppSettings)
-def read_settings() -> AppSettings:
-    return get_app_settings()
+@app.get("/settings", response_model=AppSettingsSchema)
+def read_settings(db: Session = Depends(get_db)) -> AppSettings:
+    return get_or_create_app_settings(db)
 
 
-@app.patch("/settings", response_model=AppSettings)
-def update_settings(payload: AppSettingsPatch) -> AppSettings:
-    return patch_app_settings(payload)
+@app.patch("/settings", response_model=AppSettingsSchema)
+def update_settings(payload: AppSettingsPatch, db: Session = Depends(get_db)) -> AppSettings:
+    item = get_or_create_app_settings(db)
+    patch = payload.model_dump(exclude_unset=True)
+    if "feature_flags" in patch:
+        feature_flags = dict(item.feature_flags or {})
+        feature_flags.update(patch.pop("feature_flags") or {})
+        item.feature_flags = feature_flags
+    for field, value in patch.items():
+        if value is not None:
+            setattr(item, field, value)
+    db.commit()
+    db.refresh(item)
+    return item
 
 
-@app.get("/factory/state", response_model=FactoryState)
-def read_factory_state() -> FactoryState:
-    return get_factory_state()
+@app.get("/factory-state", response_model=FactoryStateSchema)
+@app.get("/factory/state", response_model=FactoryStateSchema)
+def read_factory_state(db: Session = Depends(get_db)) -> FactoryState:
+    return get_or_create_factory_state(db)
 
 
-@app.patch("/factory/state", response_model=FactoryState)
-def update_factory_state(payload: FactoryStatePatch) -> FactoryState:
-    try:
-        return patch_factory_state(payload)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+@app.patch("/factory-state", response_model=FactoryStateSchema)
+@app.patch("/factory/state", response_model=FactoryStateSchema)
+def update_factory_state(payload: FactoryStatePatch, db: Session = Depends(get_db)) -> FactoryState:
+    item = get_or_create_factory_state(db)
+    patch = payload.model_dump(exclude_unset=True)
+    if "mode" in patch and patch["mode"] is not None:
+        mode = patch["mode"].strip().lower()
+        if mode not in {"running", "paused", "stopped"}:
+            raise HTTPException(status_code=422, detail="Factory mode must be running, paused, or stopped")
+        item.mode = mode
+    for field in ["auto_trend_enabled", "active_project_limit", "daily_budget_usd", "monthly_budget_usd"]:
+        if field in patch and patch[field] is not None:
+            setattr(item, field, patch[field])
+    create_notification(db, level="info", title="Factory state updated", message=f"Factory mode is {item.mode}", entity_type="factory_state", entity_id=item.id)
+    db.commit()
+    db.refresh(item)
+    return item
 
 
 @app.post("/api-keys", response_model=ApiKeyRead)

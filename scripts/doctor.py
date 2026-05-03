@@ -4,11 +4,18 @@ import subprocess
 import sys
 
 
+def python_command() -> list[str]:
+    for command in (["python3", "--version"], ["python", "--version"], ["py", "--version"]):
+        if shutil.which(command[0]):
+            return command
+    return ["python3", "--version"]
+
+
 CHECKS = [
     ("git", ["git", "--version"]),
     ("node", ["node", "--version"]),
     ("pnpm", ["pnpm", "--version"]),
-    ("python3", ["python3", "--version"]),
+    ("python", python_command()),
     ("docker", ["docker", "--version"]),
     ("docker compose", ["docker", "compose", "version"]),
     ("flutter", ["flutter", "--version"]),
@@ -35,7 +42,7 @@ def main() -> int:
     for label, command in CHECKS:
         ok, detail = run(command)
         status = "OK" if ok else "WARN"
-        if not ok and label in {"git", "node", "pnpm", "python3", "docker", "docker compose"}:
+        if not ok and label in {"git", "node", "pnpm", "python", "docker", "docker compose"}:
             failed += 1
         print(f"{status:4} {label:14} {detail}")
     if failed:

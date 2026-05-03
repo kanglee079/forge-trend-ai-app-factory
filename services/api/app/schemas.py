@@ -34,16 +34,26 @@ class DoctorResponse(BaseModel):
     checks: list[DoctorCheck]
 
 
-class FactoryState(BaseModel):
+class FactoryState(ApiModel):
+    id: UUID
     mode: str = "running"
+    auto_trend_enabled: bool = False
+    active_project_limit: int = Field(default=1, ge=1, le=20)
+    daily_budget_usd: Decimal = Decimal("5")
+    monthly_budget_usd: Decimal = Decimal("100")
     updated_at: datetime
 
 
 class FactoryStatePatch(BaseModel):
-    mode: str
+    mode: str | None = None
+    auto_trend_enabled: bool | None = None
+    active_project_limit: int | None = Field(default=None, ge=1, le=20)
+    daily_budget_usd: Decimal | None = None
+    monthly_budget_usd: Decimal | None = None
 
 
-class AppSettings(BaseModel):
+class AppSettings(ApiModel):
+    id: UUID
     default_provider: str = "openai"
     default_model: str = "gpt-5.2"
     max_fix_iterations: int = Field(default=3, ge=0, le=20)
@@ -53,6 +63,12 @@ class AppSettings(BaseModel):
     theme: str = "system"
     daily_budget_usd: Decimal = Decimal("5")
     monthly_budget_usd: Decimal = Decimal("100")
+    default_platforms: list[str] = Field(default_factory=lambda: ["android"])
+    default_backend: str = "none"
+    default_monetization: str = "none"
+    default_language: str = "en"
+    default_target_country: str = "US"
+    policy_strictness: str = "standard"
     feature_flags: dict[str, bool] = Field(default_factory=lambda: {
         "trend_radar": False,
         "provider_key_network_test": False,
@@ -72,6 +88,12 @@ class AppSettingsPatch(BaseModel):
     theme: str | None = None
     daily_budget_usd: Decimal | None = None
     monthly_budget_usd: Decimal | None = None
+    default_platforms: list[str] | None = None
+    default_backend: str | None = None
+    default_monetization: str | None = None
+    default_language: str | None = None
+    default_target_country: str | None = None
+    policy_strictness: str | None = None
     feature_flags: dict[str, bool] | None = None
 
 
@@ -182,6 +204,148 @@ class ProjectRead(ApiModel):
     workspace_path: str | None
     created_at: datetime
     updated_at: datetime
+
+
+class FactoryBriefCreate(BaseModel):
+    mode: str = "manual_idea"
+    title: str
+    raw_prompt: str
+    target_category: str | None = None
+    target_platforms: list[str] = Field(default_factory=lambda: ["android"])
+    target_country: str = "US"
+    target_language: str = "en"
+    monetization_mode: str = "none"
+    iap_enabled: bool = False
+    subscription_enabled: bool = False
+    ads_enabled: bool = False
+    backend_mode: str = "none"
+    complexity: str = "medium"
+    max_cost_usd: Decimal = Decimal("5")
+    max_runtime_minutes: int = Field(default=60, ge=5, le=720)
+    quality_threshold: int = Field(default=75, ge=0, le=100)
+    policy_strictness: str = "standard"
+
+
+class FactoryBriefRead(ApiModel):
+    id: UUID
+    mode: str
+    title: str
+    raw_prompt: str
+    target_category: str | None
+    target_platforms: list[str]
+    target_country: str
+    target_language: str
+    monetization_mode: str
+    iap_enabled: bool
+    subscription_enabled: bool
+    ads_enabled: bool
+    backend_mode: str
+    complexity: str
+    max_cost_usd: Decimal
+    max_runtime_minutes: int
+    quality_threshold: int
+    policy_strictness: str
+    status: str
+    selected_idea_id: UUID | None
+    selected_project_id: UUID | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ResearchFindingRead(ApiModel):
+    id: UUID
+    factory_brief_id: UUID
+    source: str
+    title: str
+    summary: str
+    category: str | None
+    keywords: list
+    pain_points: list
+    competitor_gaps: list
+    evidence_json: dict
+    confidence_score: int
+    created_at: datetime
+
+
+class OpportunityCandidateRead(ApiModel):
+    id: UUID
+    factory_brief_id: UUID
+    title: str
+    description: str
+    target_user: str
+    problem: str
+    unique_angle: str
+    core_features: list
+    monetization_plan: str | None
+    iap_plan_json: dict
+    subscription_plan_json: dict
+    backend_plan_json: dict
+    opportunity_score: int
+    demand_score: int
+    pain_score: int
+    monetization_score: int
+    build_feasibility_score: int
+    differentiation_score: int
+    policy_risk_score: int
+    originality_score: int
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class FactoryBriefDetail(FactoryBriefRead):
+    findings: list[ResearchFindingRead] = Field(default_factory=list)
+    candidates: list[OpportunityCandidateRead] = Field(default_factory=list)
+
+
+class ProjectTaskCreate(BaseModel):
+    title: str
+    description: str
+    agent_name: str
+    priority: int = 0
+    input_json: dict = Field(default_factory=dict)
+
+
+class ProjectTaskPatch(BaseModel):
+    status: str | None = None
+    output_json: dict | None = None
+    error_message: str | None = None
+    commit_sha: str | None = None
+
+
+class ProjectTaskRead(ApiModel):
+    id: UUID
+    project_id: UUID
+    title: str
+    description: str
+    agent_name: str
+    status: str
+    priority: int
+    input_json: dict
+    output_json: dict
+    error_message: str | None
+    commit_sha: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class NotificationCreate(BaseModel):
+    level: str = "info"
+    title: str
+    message: str
+    entity_type: str | None = None
+    entity_id: UUID | None = None
+
+
+class NotificationRead(ApiModel):
+    id: UUID
+    level: str
+    title: str
+    message: str
+    entity_type: str | None
+    entity_id: UUID | None
+    read_at: datetime | None
+    created_at: datetime
 
 
 class PipelineRunResponse(BaseModel):

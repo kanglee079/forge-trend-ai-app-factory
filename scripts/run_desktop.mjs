@@ -1,15 +1,33 @@
 import { existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const root = resolve(new URL("..", import.meta.url).pathname);
+const scriptDir = dirname(fileURLToPath(import.meta.url));
+const root = resolve(scriptDir, "..");
 const logsDir = join(root, "logs");
+const launcherLogPath = join(logsDir, "launcher.log");
 mkdirSync(logsDir, { recursive: true });
 const children = new Set();
 
+function log(message) {
+  const line = `[${new Date().toISOString()}] ${message}`;
+  console.log(message);
+  writeFileSync(launcherLogPath, `${line}\n`, { flag: "a" });
+}
+
+function commandName(command) {
+  if (process.platform !== "win32") return command;
+  if (["pnpm", "docker", "node"].includes(command)) return `${command}.cmd`;
+  return command;
+}
+
 function run(command, args, options = {}) {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, { cwd: root, stdio: "inherit", shell: false, ...options });
+    const child = spawn(commandName(command), args, { cwd: root, stdio: "inherit", shell: false, ...options });
+    child.on("error", (error) => {
+      reject(new Error(`${command} is not available: ${error.message}`));
+    });
     child.on("exit", (code) => {
       if (code === 0) {
         resolvePromise();
@@ -23,7 +41,7 @@ function run(command, args, options = {}) {
 function spawnLogged(name, command, args, env = {}) {
   const logPath = join(logsDir, `${name}.log`);
   const out = openSync(logPath, "a");
-  const child = spawn(command, args, {
+  const child = spawn(commandName(command), args, {
     cwd: root,
     env: { ...process.env, ...env },
     stdio: ["ignore", out, out],
@@ -87,9 +105,11 @@ async function ensureElectronBinary() {
 }
 
 async function main() {
-  console.log("Starting ForgeTrend desktop...");
+  log("Starting ForgeTrend desktop...");
   await ensureDependencies();
+  log("Starting Docker services: postgres, redis, minio");
   await run("docker", ["compose", "up", "-d", "postgres", "redis", "minio"]);
+  log("Running database migrations");
   await run("pnpm", ["db:migrate"]);
 
   if (!(await isReady("http://localhost:8000/health"))) {
@@ -103,11 +123,12 @@ async function main() {
   await waitFor("http://localhost:8000/health", "API");
   await waitFor("http://localhost:3000", "Dashboard");
 
-  console.log("Opening ForgeTrend desktop window...");
+  log("Opening ForgeTrend desktop window...");
   await run("pnpm", ["desktop"]);
 }
 
 main().catch((error) => {
+  log(`Launcher failed: ${error instanceof Error ? error.message : String(error)}`);
   console.error(error);
   const detail = existsSync(join(logsDir, "api.log")) ? readFileSync(join(logsDir, "api.log"), "utf8").slice(-2000) : "";
   if (detail) {

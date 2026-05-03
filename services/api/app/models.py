@@ -169,3 +169,155 @@ class CostUsage(Base):
     estimated_cost_usd: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"))
     purpose: Mapped[str] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class FactoryState(Base):
+    __tablename__ = "factory_state"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    mode: Mapped[str] = mapped_column(String(40), default="running")
+    auto_trend_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    active_project_limit: Mapped[int] = mapped_column(Integer, default=1)
+    daily_budget_usd: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("5"))
+    monthly_budget_usd: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("100"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class AppSettings(Base):
+    __tablename__ = "app_settings"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    default_provider: Mapped[str] = mapped_column(String(120), default="openai")
+    default_model: Mapped[str] = mapped_column(String(160), default="gpt-5.2")
+    max_fix_iterations: Mapped[int] = mapped_column(Integer, default=3)
+    workspace_root: Mapped[str] = mapped_column(String(512), default="workspaces")
+    auto_refresh_seconds: Mapped[int] = mapped_column(Integer, default=5)
+    notifications_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    theme: Mapped[str] = mapped_column(String(40), default="system")
+    daily_budget_usd: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("5"))
+    monthly_budget_usd: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("100"))
+    default_platforms: Mapped[list[str]] = mapped_column(JSONB, default=lambda: ["android"])
+    default_backend: Mapped[str] = mapped_column(String(80), default="none")
+    default_monetization: Mapped[str] = mapped_column(String(80), default="none")
+    default_language: Mapped[str] = mapped_column(String(80), default="en")
+    default_target_country: Mapped[str] = mapped_column(String(80), default="US")
+    policy_strictness: Mapped[str] = mapped_column(String(80), default="standard")
+    feature_flags: Mapped[dict] = mapped_column(JSONB, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class FactoryBrief(Base):
+    __tablename__ = "factory_briefs"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    mode: Mapped[str] = mapped_column(String(80))
+    title: Mapped[str] = mapped_column(String(255))
+    raw_prompt: Mapped[str] = mapped_column(Text)
+    target_category: Mapped[str] = mapped_column(String(120), nullable=True)
+    target_platforms: Mapped[list[str]] = mapped_column(JSONB, default=lambda: ["android"])
+    target_country: Mapped[str] = mapped_column(String(80), default="US")
+    target_language: Mapped[str] = mapped_column(String(80), default="en")
+    monetization_mode: Mapped[str] = mapped_column(String(80), default="none")
+    iap_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    subscription_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    ads_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    backend_mode: Mapped[str] = mapped_column(String(80), default="none")
+    complexity: Mapped[str] = mapped_column(String(80), default="medium")
+    max_cost_usd: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("5"))
+    max_runtime_minutes: Mapped[int] = mapped_column(Integer, default=60)
+    quality_threshold: Mapped[int] = mapped_column(Integer, default=75)
+    policy_strictness: Mapped[str] = mapped_column(String(80), default="standard")
+    status: Mapped[str] = mapped_column(String(80), default="draft")
+    selected_idea_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("ideas.id"), nullable=True)
+    selected_project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class TrendSource(Base):
+    __tablename__ = "trend_sources"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    name: Mapped[str] = mapped_column(String(255))
+    source_type: Mapped[str] = mapped_column(String(80), default="manual")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    config_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    rate_limit_per_hour: Mapped[int] = mapped_column(Integer, default=10)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ResearchFinding(Base):
+    __tablename__ = "research_findings"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    factory_brief_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("factory_briefs.id"))
+    source: Mapped[str] = mapped_column(String(120))
+    title: Mapped[str] = mapped_column(String(255))
+    summary: Mapped[str] = mapped_column(Text)
+    category: Mapped[str] = mapped_column(String(120), nullable=True)
+    keywords: Mapped[list] = mapped_column(JSONB, default=list)
+    pain_points: Mapped[list] = mapped_column(JSONB, default=list)
+    competitor_gaps: Mapped[list] = mapped_column(JSONB, default=list)
+    evidence_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    confidence_score: Mapped[int] = mapped_column(Integer, default=50)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class OpportunityCandidate(Base):
+    __tablename__ = "opportunity_candidates"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    factory_brief_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("factory_briefs.id"))
+    title: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str] = mapped_column(Text)
+    target_user: Mapped[str] = mapped_column(Text)
+    problem: Mapped[str] = mapped_column(Text)
+    unique_angle: Mapped[str] = mapped_column(Text)
+    core_features: Mapped[list] = mapped_column(JSONB, default=list)
+    monetization_plan: Mapped[str] = mapped_column(Text, nullable=True)
+    iap_plan_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    subscription_plan_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    backend_plan_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    opportunity_score: Mapped[int] = mapped_column(Integer, default=50)
+    demand_score: Mapped[int] = mapped_column(Integer, default=50)
+    pain_score: Mapped[int] = mapped_column(Integer, default=50)
+    monetization_score: Mapped[int] = mapped_column(Integer, default=50)
+    build_feasibility_score: Mapped[int] = mapped_column(Integer, default=50)
+    differentiation_score: Mapped[int] = mapped_column(Integer, default=50)
+    policy_risk_score: Mapped[int] = mapped_column(Integer, default=20)
+    originality_score: Mapped[int] = mapped_column(Integer, default=75)
+    status: Mapped[str] = mapped_column(String(80), default="proposed")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ProjectTask(Base):
+    __tablename__ = "project_tasks"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("projects.id"))
+    title: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str] = mapped_column(Text)
+    agent_name: Mapped[str] = mapped_column(String(120))
+    status: Mapped[str] = mapped_column(String(80), default="pending")
+    priority: Mapped[int] = mapped_column(Integer, default=0)
+    input_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    output_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    error_message: Mapped[str] = mapped_column(Text, nullable=True)
+    commit_sha: Mapped[str] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    level: Mapped[str] = mapped_column(String(40), default="info")
+    title: Mapped[str] = mapped_column(String(255))
+    message: Mapped[str] = mapped_column(Text)
+    entity_type: Mapped[str] = mapped_column(String(120), nullable=True)
+    entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=True)
+    read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
