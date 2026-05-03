@@ -5,22 +5,23 @@ import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { Activity, Bot, CheckCircle2, FileText, KeyRound, LayoutDashboard, Lightbulb, Moon, Server, Settings, Stethoscope, Smartphone, Sun } from "lucide-react";
 import { api } from "@/lib/api";
+import { useLanguage } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { FeedbackProvider } from "@/components/feedback";
 import { NotificationCenter } from "@/components/NotificationCenter";
 import { Badge, Button } from "@/components/ui";
 
 const navItems = [
-  { href: "/", label: "Overview", icon: LayoutDashboard },
-  { href: "/factory", label: "Factory", icon: Bot },
-  { href: "/doctor", label: "Doctor", icon: Stethoscope },
-  { href: "/api-keys", label: "API Keys", icon: KeyRound },
-  { href: "/workers", label: "Workers", icon: Server },
-  { href: "/ideas", label: "Ideas", icon: Lightbulb },
-  { href: "/projects", label: "Projects", icon: Smartphone },
-  { href: "/logs", label: "Logs", icon: FileText },
-  { href: "/settings", label: "Settings", icon: Settings }
-];
+  { href: "/", labelKey: "overview", icon: LayoutDashboard },
+  { href: "/factory", labelKey: "factory", icon: Bot },
+  { href: "/doctor", labelKey: "doctor", icon: Stethoscope },
+  { href: "/api-keys", labelKey: "apiKeys", icon: KeyRound },
+  { href: "/workers", labelKey: "workers", icon: Server },
+  { href: "/ideas", labelKey: "ideas", icon: Lightbulb },
+  { href: "/projects", labelKey: "projects", icon: Smartphone },
+  { href: "/logs", labelKey: "logs", icon: FileText },
+  { href: "/settings", labelKey: "settings", icon: Settings }
+] as const;
 
 type HealthState = {
   apiOnline: boolean;
@@ -32,6 +33,7 @@ type HealthState = {
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const { t } = useLanguage();
   const [theme, setTheme] = useState<"light" | "dark">(() => getInitialTheme());
   const [health, setHealth] = useState<HealthState>({ apiOnline: false, workerCount: null, apiKeyCount: null, ideaCount: null, projectCount: null });
 
@@ -105,20 +107,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   <Brand compact />
                 </div>
                 <div className="hidden text-sm text-muted-foreground lg:block">
-                  {activeItem?.label ?? "ForgeTrend"}
+                  {activeItem ? t(activeItem.labelKey) : "ForgeTrend"}
                 </div>
               </div>
               <div className="flex items-center gap-2">
                 <SystemBadge label="API" online={health.apiOnline} />
-                <Badge tone={health.workerCount ? "success" : "warning"}>{health.workerCount ?? "-"} workers</Badge>
+                <Badge tone={health.workerCount ? "success" : "warning"}>{health.workerCount ?? "-"} {t("workerShort")}</Badge>
                 <NotificationCenter />
                 <Button
                   type="button"
                   variant="secondary"
                   className="h-10 w-10 px-0"
                   onClick={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
-                  aria-label="Toggle theme"
-                  title="Toggle theme"
+                  aria-label={t("toggleTheme")}
+                  title={t("toggleTheme")}
                 >
                   {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
                 </Button>
@@ -155,6 +157,7 @@ function getInitialTheme(): "light" | "dark" {
 }
 
 function SetupGuide({ apiOnline, workerCount, apiKeyCount, ideaCount, projectCount }: HealthState) {
+  const { t } = useLanguage();
   const items = [
     { label: "API", complete: apiOnline },
     { label: "Worker", complete: Boolean(workerCount) },
@@ -167,8 +170,8 @@ function SetupGuide({ apiOnline, workerCount, apiKeyCount, ideaCount, projectCou
     <div className="mb-5 rounded-lg border border-border bg-card px-4 py-3 text-sm text-card-foreground shadow-sm">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <div className="font-medium">First run path</div>
-          <div className="text-xs text-muted-foreground">Connect the local pieces, then create an idea and run a project pipeline.</div>
+          <div className="font-medium">{t("firstRunPath")}</div>
+          <div className="text-xs text-muted-foreground">{t("firstRunHelp")}</div>
         </div>
         <div className="flex flex-wrap gap-2">
           {items.map((item) => (
@@ -198,6 +201,7 @@ function Brand({ compact = false }: { compact?: boolean }) {
 }
 
 function NavItem({ item, active }: { item: (typeof navItems)[number]; active: boolean }) {
+  const { t } = useLanguage();
   const Icon = item.icon;
   return (
     <Link
@@ -208,12 +212,13 @@ function NavItem({ item, active }: { item: (typeof navItems)[number]; active: bo
       )}
     >
       <Icon size={17} />
-      {item.label}
+      {t(item.labelKey)}
     </Link>
   );
 }
 
 function NavPill({ item, active }: { item: (typeof navItems)[number]; active: boolean }) {
+  const { t } = useLanguage();
   const Icon = item.icon;
   return (
     <Link
@@ -224,7 +229,7 @@ function NavPill({ item, active }: { item: (typeof navItems)[number]; active: bo
       )}
     >
       <Icon size={16} />
-      {item.label}
+      {t(item.labelKey)}
     </Link>
   );
 }

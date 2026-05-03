@@ -753,6 +753,11 @@ def finalize_factory_brief(id: UUID, payload: FactoryBriefFinalizeRequest, db: S
             "Check naming, privacy, permissions, secrets, and release readiness before creating a release candidate.",
             "policy_agent",
         ),
+        (
+            "Run product quality gate",
+            "Check product specificity, localization, minimum functionality, reports, and store-readiness blockers.",
+            "quality_gate_agent",
+        ),
     ]
     for priority, (title, description, agent_name) in enumerate(task_specs, start=10):
         db.add(

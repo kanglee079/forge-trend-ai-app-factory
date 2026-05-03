@@ -7,6 +7,7 @@ from daemon.api import FactoryApi
 from daemon.config import settings
 from daemon.cost_guard import check_cost_limit
 from daemon.provider_adapters import ADAPTERS, ProviderUnavailable, run_codex_cli
+from daemon.quality_gate import build_quality_gate_result, quality_gate_report_markdown, store_readiness_report_markdown
 from daemon.research.providers import build_research_bundle
 from daemon.safety import run_safe
 
@@ -100,6 +101,43 @@ def dart_string(value: Any) -> str:
     return str(value).replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ")
 
 
+def linked_brief_id(ctx: PipelineContext) -> str:
+    return next(
+        (
+            str(task.get("input_json", {}).get("factory_brief_id"))
+            for task in ctx.tasks_by_agent.values()
+            if task.get("input_json", {}).get("factory_brief_id")
+        ),
+        "",
+    )
+
+
+def linked_candidate_id(ctx: PipelineContext) -> str:
+    return next(
+        (
+            str(task.get("input_json", {}).get("candidate_id"))
+            for task in ctx.tasks_by_agent.values()
+            if task.get("input_json", {}).get("candidate_id")
+        ),
+        "",
+    )
+
+
+def get_linked_brief(ctx: PipelineContext) -> dict[str, Any] | None:
+    brief_id = linked_brief_id(ctx)
+    return ctx.api.get_factory_brief(brief_id) if brief_id else None
+
+
+def get_selected_candidate(brief: dict[str, Any] | None, candidate_id: str) -> dict[str, Any] | None:
+    if not brief:
+        return None
+    candidates = brief.get("candidates", [])
+    return next((item for item in candidates if item.get("id") == candidate_id), None) or next(
+        (item for item in candidates if item.get("status") == "selected"),
+        None,
+    )
+
+
 def write_factory_brief_report(brief: dict[str, Any], findings: list[dict[str, Any]], candidates: list[dict[str, Any]]) -> None:
     workspace_root = settings.worker_workspace_root
     if not workspace_root.is_absolute():
@@ -144,23 +182,15 @@ def summarize_artifacts(artifacts: list[dict[str, Any]]) -> str:
     return "\n".join(f"- {item.get('kind')}: {item.get('name')} ({item.get('path')})" for item in artifacts)
 
 
-def write_factory_run_report(ctx: PipelineContext, qa_output: dict[str, Any] | None, policy_output: dict[str, Any] | None, final_status: str) -> None:
-    brief_id = next(
-        (
-            str(task.get("input_json", {}).get("factory_brief_id"))
-            for task in ctx.tasks_by_agent.values()
-            if task.get("input_json", {}).get("factory_brief_id")
-        ),
-        "",
-    )
-    candidate_id = next(
-        (
-            str(task.get("input_json", {}).get("candidate_id"))
-            for task in ctx.tasks_by_agent.values()
-            if task.get("input_json", {}).get("candidate_id")
-        ),
-        "",
-    )
+def write_factory_run_report(
+    ctx: PipelineContext,
+    qa_output: dict[str, Any] | None,
+    policy_output: dict[str, Any] | None,
+    final_status: str,
+    quality_output: dict[str, Any] | None = None,
+) -> None:
+    brief_id = linked_brief_id(ctx)
+    candidate_id = linked_candidate_id(ctx)
     brief = ctx.api.get_factory_brief(brief_id) if brief_id else None
     events = ctx.api.list_project_events(ctx.project_id)
     tasks = ctx.api.list_project_tasks(ctx.project_id)
@@ -231,6 +261,9 @@ def write_factory_run_report(ctx: PipelineContext, qa_output: dict[str, Any] | N
     lines.extend(
         [
             "",
+            "## Product Quality Gate",
+            f"- Summary: {json.dumps(quality_output or {}, ensure_ascii=True)[:2000]}",
+            "",
             "## Artifacts",
             summarize_artifacts(artifacts),
             "",
@@ -243,6 +276,65 @@ def write_factory_run_report(ctx: PipelineContext, qa_output: dict[str, Any] | N
     )
     write_text(report_path, "\n".join(lines))
     ctx.api.artifact(ctx.project_id, "document", "factory_run_report.md", str(report_path), {"brief_id": brief_id, "final_status": final_status})
+
+    vi_research_lines = [
+        f"- {finding.get('title')}: {finding.get('summary')}"
+        for finding in (brief or {}).get("findings", [])
+    ] or ["- Không có finding liên kết trong API."]
+    vi_feature_lines = [
+        f"- {item}"
+        for item in compact_list(
+            (selected_candidate or {}).get("core_features", []),
+            ["Luồng chính", "Theo dõi tiến độ", "Cài đặt và quyền riêng tư"],
+        )
+    ]
+    vi_report_path = ctx.artifacts_dir / "factory_run_report.vi.md"
+    vi_lines = [
+        "# Báo cáo chạy xưởng tạo app",
+        "",
+        "## Ý tưởng đầu vào",
+        f"- Tên brief: {(brief or {}).get('title', ctx.project['name'])}",
+        f"- Nội dung: {(brief or {}).get('raw_prompt', (ctx.idea or {}).get('description', ''))}",
+        "",
+        "## Kết quả nghiên cứu",
+        *vi_research_lines,
+        "",
+        "## Ứng viên được chọn",
+        f"- {(selected_candidate or {}).get('title', ctx.project['name'])}",
+        f"- Điểm cơ hội: {(selected_candidate or {}).get('opportunity_score', 'unknown')}",
+        "",
+        "## Tính năng chính",
+        *vi_feature_lines,
+        "",
+        "## Kết quả code",
+        f"- Provider: {code_provider.get('provider', 'unknown')}",
+        "",
+        "## Kết quả QA",
+        f"- Passed: {(qa_output or {}).get('passed')}",
+        "",
+        "## Kết quả kiểm tra chất lượng sản phẩm",
+        f"- Score: {(quality_output or {}).get('score', 'unknown')}",
+        f"- Passed: {(quality_output or {}).get('passed', 'unknown')}",
+        "",
+        "## Kết quả kiểm tra chính sách",
+        f"- Risk: {(policy_output or {}).get('risk', 'unknown')}",
+        f"- Passed: {(policy_output or {}).get('passed', 'unknown')}",
+        "",
+        "## Artifact tạo được",
+        summarize_artifacts(artifacts),
+        "",
+        "## Có thể đẩy store chưa?",
+        "Chưa. ForgeTrend chỉ tạo ứng viên phát hành để con người review, không tự động publish.",
+        "",
+        "## Việc cần làm tiếp theo",
+        "Mở app Flutter đã tạo, đọc báo cáo QA/chất lượng/chính sách, chỉnh nội dung sản phẩm và chỉ phát hành sau khi con người phê duyệt.",
+    ]
+    write_text(vi_report_path, "\n".join(vi_lines))
+    ctx.api.artifact(ctx.project_id, "document", "factory_run_report.vi.md", str(vi_report_path), {"brief_id": brief_id, "final_status": final_status})
+
+    en_report_path = ctx.artifacts_dir / "factory_run_report.en.md"
+    write_text(en_report_path, "\n".join(lines))
+    ctx.api.artifact(ctx.project_id, "document", "factory_run_report.en.md", str(en_report_path), {"brief_id": brief_id, "final_status": final_status})
 
 
 def run_factory_brief(api: FactoryApi, brief_id: str) -> None:
@@ -557,10 +649,37 @@ def code_agent(ctx: PipelineContext, iteration: int = 0, qa_error: str | None = 
     else:
         ctx.event("code_agent", "Flutter app already exists; preparing code pass", metadata_json={"iteration": iteration})
 
+    brief = get_linked_brief(ctx)
+    candidate = get_selected_candidate(brief, linked_candidate_id(ctx))
     title = ctx.project["name"]
-    about = ctx.idea["description"] if ctx.idea else "A focused original mobile app generated by ForgeTrend."
+    raw_prompt = str((brief or {}).get("raw_prompt") or "")
+    about = str((candidate or {}).get("description") or (ctx.idea or {}).get("description") or raw_prompt or "A focused original mobile app.")
     evidence = ctx.idea.get("evidence_json", {}) if ctx.idea else {}
-    core_features = compact_list(evidence.get("core_features", []), ["Guided first session", "Daily progress dashboard", "Local sample data"])
+    target_language = str((brief or {}).get("target_language") or "en").lower()
+    prompt_lower = f"{raw_prompt} {about} {title}".lower()
+    is_hsk = "hsk" in prompt_lower or "chinese" in prompt_lower or "tiếng trung" in prompt_lower
+    is_vi = target_language == "vi" or "người việt" in prompt_lower or "vietnamese" in prompt_lower
+    if is_vi and is_hsk:
+        app_name = "Học HSK Mỗi Ngày"
+        tagline = "Lộ trình ôn từ vựng và bài học HSK cho người Việt."
+        idea_summary = "Ứng dụng giúp người học tiếng Trung duy trì lịch học hằng ngày, ôn từ vựng trọng tâm và xem tiến độ tuần."
+        core_features = [
+            "Ôn từ vựng HSK hôm nay",
+            "Lộ trình bài học theo trình độ",
+            "Theo dõi tiến độ tuần",
+            "Nhắc lại từ khó",
+            "Ghi chú mục tiêu học tập",
+        ]
+    elif is_vi:
+        app_name = title
+        tagline = "Một ứng dụng tập trung vào mục tiêu chính của người dùng."
+        idea_summary = about
+        core_features = compact_list((candidate or {}).get("core_features", []) or evidence.get("core_features", []), ["Việc cần làm hôm nay", "Theo dõi tiến độ", "Lịch sử hoạt động", "Cài đặt riêng tư"])
+    else:
+        app_name = title
+        tagline = "A focused workflow with clear progress and privacy-first controls."
+        idea_summary = about
+        core_features = compact_list((candidate or {}).get("core_features", []) or evidence.get("core_features", []), ["Plan today's session", "Track weekly progress", "Review saved activity", "Manage privacy settings"])
     has_paywall = any(
         bool(value)
         for value in [
@@ -571,21 +690,428 @@ def code_agent(ctx: PipelineContext, iteration: int = 0, qa_error: str | None = 
         ]
     )
     dart_features = ",\n".join(f"    '{dart_string(feature)}'" for feature in core_features)
-    title_literal = dart_string(title)
-    about_literal = dart_string(about)[:900]
+    title_literal = dart_string(app_name)
+    about_literal = dart_string(idea_summary)[:900]
+    language_literal = "vi" if is_vi else "en"
+    strings = {
+        "home_title": "Hôm nay" if is_vi else "Today",
+        "primary_action": "Bắt đầu buổi học" if is_vi and is_hsk else ("Mở luồng chính" if is_vi else "Open main workflow"),
+        "progress_title": "Tiến độ tuần này" if is_vi else "Weekly progress",
+        "feature_title": "Lộ trình học" if is_vi and is_hsk else ("Luồng sản phẩm chính" if is_vi else "Main product flow"),
+        "history_title": "Hoạt động gần đây" if is_vi else "Recent activity",
+        "settings": "Cài đặt" if is_vi else "Settings",
+        "privacy": "Quyền riêng tư" if is_vi else "Privacy",
+        "paywall": "Gói Premium" if is_vi else "Premium",
+        "start": "Bắt đầu" if is_vi else "Start",
+        "empty": "Chưa có dữ liệu. Hãy hoàn thành mục đầu tiên để tạo lịch sử." if is_vi else "No activity yet. Complete the first item to create history.",
+        "loading": "Đang chuẩn bị dữ liệu học tập..." if is_vi else "Preparing your workflow...",
+        "error": "Không thể tải dữ liệu mẫu. Kiểm tra lại cấu hình rồi thử lại." if is_vi else "Could not load the workflow data. Check configuration and try again.",
+        "success": "Đã cập nhật tiến độ." if is_vi else "Progress updated.",
+        "reset": "Đặt lại tiến độ" if is_vi else "Reset progress",
+    }
     constants = f"""class AppContent {{
   const AppContent._();
 
   static const String appName = '{title_literal}';
-  static const String tagline = 'Original workflow, clear next action.';
+  static const String defaultLanguage = '{language_literal}';
+  static const String tagline = '{dart_string(tagline)}';
   static const String idea = '{about_literal}';
   static const bool subscriptionEnabled = {'true' if has_paywall else 'false'};
+  static const String homeTitle = '{dart_string(strings["home_title"])}';
+  static const String primaryActionLabel = '{dart_string(strings["primary_action"])}';
+  static const String progressTitle = '{dart_string(strings["progress_title"])}';
+  static const String featureTitle = '{dart_string(strings["feature_title"])}';
+  static const String historyTitle = '{dart_string(strings["history_title"])}';
+  static const String settingsLabel = '{dart_string(strings["settings"])}';
+  static const String privacyTitle = '{dart_string(strings["privacy"])}';
+  static const String paywallTitle = '{dart_string(strings["paywall"])}';
+  static const String startLabel = '{dart_string(strings["start"])}';
+  static const String emptyStateTitle = '{dart_string(strings["empty"])}';
+  static const String loadingStateTitle = '{dart_string(strings["loading"])}';
+  static const String errorStateTitle = '{dart_string(strings["error"])}';
+  static const String successMessage = '{dart_string(strings["success"])}';
+  static const String resetLabel = '{dart_string(strings["reset"])}';
   static const List<String> coreFeatures = [
 {dart_features}
   ];
+
+  static const Map<String, Map<String, String>> localized = {{
+    'vi': {{
+      'start': 'Bắt đầu',
+      'settings': 'Cài đặt',
+      'privacy': 'Quyền riêng tư',
+      'paywall': 'Gói Premium',
+    }},
+    'en': {{
+      'start': 'Start',
+      'settings': 'Settings',
+      'privacy': 'Privacy',
+      'paywall': 'Premium',
+    }},
+  }};
+
+  static String text(String key, [String locale = defaultLanguage]) {{
+    return localized[locale]?[key] ?? localized['en']?[key] ?? key;
+  }}
 }}
 """
     write_text(ctx.app_dir / "lib" / "core" / "app_content.dart", constants)
+
+    onboarding_screen = """import 'package:flutter/material.dart';
+
+import '../../core/app_content.dart';
+
+class OnboardingScreen extends StatelessWidget {
+  const OnboardingScreen({required this.onFinish, super.key});
+
+  final VoidCallback onFinish;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Spacer(),
+              Icon(
+                Icons.school_outlined,
+                size: 56,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+              const SizedBox(height: 24),
+              Text(AppContent.appName, style: Theme.of(context).textTheme.headlineMedium),
+              const SizedBox(height: 12),
+              Text(AppContent.tagline, style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 16),
+              Text(AppContent.idea),
+              const Spacer(),
+              FilledButton(
+                onPressed: onFinish,
+                child: Text(AppContent.startLabel),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+"""
+    write_text(ctx.app_dir / "lib" / "features" / "onboarding" / "onboarding_screen.dart", onboarding_screen)
+
+    home_screen = """import 'package:flutter/material.dart';
+
+import '../../core/app_content.dart';
+import '../core_flow/core_flow_screen.dart';
+import '../onboarding/onboarding_screen.dart';
+import '../paywall/paywall_screen.dart';
+import '../settings/settings_screen.dart';
+
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  var _showOnboarding = true;
+  var _selectedIndex = 0;
+  var _completedToday = 1;
+
+  @override
+  Widget build(BuildContext context) {
+    if (_showOnboarding) {
+      return OnboardingScreen(onFinish: () => setState(() => _showOnboarding = false));
+    }
+
+    final pages = [
+      _HomeDashboard(completedToday: _completedToday, onProgress: () => setState(() => _completedToday = (_completedToday + 1).clamp(0, AppContent.coreFeatures.length))),
+      const SettingsScreen(),
+    ];
+
+    return Scaffold(
+      appBar: AppBar(title: const Text(AppContent.appName)),
+      body: pages[_selectedIndex],
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _selectedIndex,
+        onDestinationSelected: (index) => setState(() => _selectedIndex = index),
+        destinations: [
+          NavigationDestination(icon: const Icon(Icons.dashboard_outlined), selectedIcon: const Icon(Icons.dashboard), label: AppContent.homeTitle),
+          NavigationDestination(icon: const Icon(Icons.settings_outlined), selectedIcon: const Icon(Icons.settings), label: AppContent.settingsLabel),
+        ],
+      ),
+    );
+  }
+}
+
+class _HomeDashboard extends StatelessWidget {
+  const _HomeDashboard({required this.completedToday, required this.onProgress});
+
+  final int completedToday;
+  final VoidCallback onProgress;
+
+  @override
+  Widget build(BuildContext context) {
+    final total = AppContent.coreFeatures.length;
+    final progress = total == 0 ? 0.0 : completedToday / total;
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Text(AppContent.homeTitle, style: Theme.of(context).textTheme.headlineSmall),
+        const SizedBox(height: 12),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(AppContent.progressTitle, style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 8),
+                LinearProgressIndicator(value: progress.clamp(0, 1)),
+                const SizedBox(height: 8),
+                Text('$completedToday / $total'),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Card(
+          child: ListTile(
+            leading: const Icon(Icons.route_outlined),
+            title: Text(AppContent.featureTitle),
+            subtitle: Text(AppContent.coreFeatures.first),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const CoreFlowScreen())),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Card(
+          child: ListTile(
+            leading: const Icon(Icons.history_outlined),
+            title: Text(AppContent.historyTitle),
+            subtitle: Text(completedToday > 0 ? AppContent.successMessage : AppContent.emptyStateTitle),
+          ),
+        ),
+        const SizedBox(height: 16),
+        FilledButton(
+          onPressed: () {
+            onProgress();
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(AppContent.successMessage)));
+          },
+          child: Text(AppContent.primaryActionLabel),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton(
+          onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const CoreFlowScreen())),
+          child: Text(AppContent.featureTitle),
+        ),
+        if (AppContent.subscriptionEnabled) ...[
+          const SizedBox(height: 8),
+          OutlinedButton(
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const PaywallScreen())),
+            child: Text(AppContent.paywallTitle),
+          ),
+        ],
+      ],
+    );
+  }
+}
+"""
+    write_text(ctx.app_dir / "lib" / "features" / "home" / "home_screen.dart", home_screen)
+
+    core_flow_screen = """import 'package:flutter/material.dart';
+
+import '../../core/app_content.dart';
+
+class CoreFlowScreen extends StatefulWidget {
+  const CoreFlowScreen({super.key});
+
+  @override
+  State<CoreFlowScreen> createState() => _CoreFlowScreenState();
+}
+
+class _CoreFlowScreenState extends State<CoreFlowScreen> {
+  final Set<int> _completed = {0};
+  var _loading = false;
+  String? _errorMessage;
+
+  Future<void> _refreshPlan() async {
+    setState(() {
+      _loading = true;
+      _errorMessage = null;
+    });
+    await Future<void>.delayed(const Duration(milliseconds: 250));
+    if (!mounted) return;
+    setState(() => _loading = false);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(AppContent.successMessage)));
+  }
+
+  Future<void> _confirmReset() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(AppContent.resetLabel),
+        content: Text(AppContent.emptyStateTitle),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('No')),
+          FilledButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('OK')),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      setState(() => _completed.clear());
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final items = AppContent.coreFeatures;
+    return Scaffold(
+      appBar: AppBar(title: Text(AppContent.featureTitle)),
+      body: RefreshIndicator(
+        onRefresh: _refreshPlan,
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            if (_loading) ...[
+              LinearProgressIndicator(),
+              const SizedBox(height: 12),
+              Text(AppContent.loadingStateTitle),
+            ],
+            if (_errorMessage != null)
+              Card(
+                color: Theme.of(context).colorScheme.errorContainer,
+                child: ListTile(
+                  leading: const Icon(Icons.error_outline),
+                  title: Text(AppContent.errorStateTitle),
+                  subtitle: Text(_errorMessage!),
+                  trailing: TextButton(onPressed: _refreshPlan, child: const Text('Retry')),
+                ),
+              ),
+            if (items.isEmpty)
+              Card(
+                child: ListTile(
+                  leading: const Icon(Icons.inbox_outlined),
+                  title: Text(AppContent.emptyStateTitle),
+                  trailing: FilledButton(onPressed: _refreshPlan, child: Text(AppContent.primaryActionLabel)),
+                ),
+              )
+            else
+              ...items.asMap().entries.map(
+                    (entry) => CheckboxListTile(
+                      value: _completed.contains(entry.key),
+                      title: Text(entry.value),
+                      subtitle: Text('${AppContent.progressTitle}: ${entry.key + 1}/${items.length}'),
+                      onChanged: (checked) {
+                        setState(() {
+                          if (checked == true) {
+                            _completed.add(entry.key);
+                          } else {
+                            _completed.remove(entry.key);
+                          }
+                        });
+                      },
+                    ),
+                  ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: _refreshPlan,
+              icon: const Icon(Icons.sync),
+              label: Text(AppContent.primaryActionLabel),
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: _confirmReset,
+              icon: const Icon(Icons.restart_alt),
+              label: Text(AppContent.resetLabel),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+"""
+    write_text(ctx.app_dir / "lib" / "features" / "core_flow" / "core_flow_screen.dart", core_flow_screen)
+
+    settings_screen = """import 'package:flutter/material.dart';
+
+import '../../core/app_content.dart';
+import '../privacy/privacy_screen.dart';
+
+class SettingsScreen extends StatelessWidget {
+  const SettingsScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Text(AppContent.settingsLabel, style: Theme.of(context).textTheme.headlineSmall),
+        const SizedBox(height: 12),
+        Card(
+          child: ListTile(
+            leading: const Icon(Icons.language_outlined),
+            title: Text(AppContent.defaultLanguage == 'vi' ? 'Ngôn ngữ' : 'Language'),
+            subtitle: Text(AppContent.defaultLanguage == 'vi' ? 'Tiếng Việt, có English fallback' : 'English with Vietnamese support'),
+          ),
+        ),
+        Card(
+          child: ListTile(
+            leading: const Icon(Icons.privacy_tip_outlined),
+            title: Text(AppContent.privacyTitle),
+            subtitle: Text(AppContent.defaultLanguage == 'vi' ? 'Dữ liệu MVP lưu cục bộ, chưa bật phân tích sản xuất.' : 'MVP data stays local; production analytics are not enabled.'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const PrivacyScreen())),
+          ),
+        ),
+      ],
+    );
+  }
+}
+"""
+    write_text(ctx.app_dir / "lib" / "features" / "settings" / "settings_screen.dart", settings_screen)
+
+    privacy_screen = """import 'package:flutter/material.dart';
+
+import '../../core/app_content.dart';
+
+class PrivacyScreen extends StatelessWidget {
+  const PrivacyScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final isVi = AppContent.defaultLanguage == 'vi';
+    return Scaffold(
+      appBar: AppBar(title: Text(AppContent.privacyTitle)),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.shield_outlined),
+              title: Text(isVi ? 'Cam kết dữ liệu' : 'Data posture'),
+              subtitle: Text(isVi ? 'Ứng viên app này không nhúng API key, analytics sản xuất hoặc tự động publish.' : 'This app candidate does not bundle API keys, production analytics, or auto-publishing.'),
+            ),
+          ),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.fact_check_outlined),
+              title: Text(isVi ? 'Cần con người duyệt' : 'Human review required'),
+              subtitle: Text(isVi ? 'Hãy rà soát chính sách, nội dung, thanh toán và store listing trước khi phát hành.' : 'Review policy, content, billing, and store listing before release.'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+"""
+    write_text(ctx.app_dir / "lib" / "features" / "privacy" / "privacy_screen.dart", privacy_screen)
 
     if has_paywall:
         purchase_service = """class PurchaseService {
@@ -595,7 +1121,7 @@ def code_agent(ctx: PipelineContext, iteration: int = 0, qa_error: str | None = 
 
   Future<String> startPlaceholderPurchase(String planName) async {
     await Future<void>.delayed(const Duration(milliseconds: 300));
-    return 'Purchase placeholder for $planName. Add reviewed store billing before release.';
+    return 'Mô phỏng thanh toán cho $planName. Cần cấu hình StoreKit hoặc Google Play Billing trước khi phát hành.';
   }
 }
 """
@@ -617,26 +1143,27 @@ class _PaywallScreenState extends State<PaywallScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isVi = AppContent.defaultLanguage == 'vi';
     return Scaffold(
-      appBar: AppBar(title: const Text('Premium')),
+      appBar: AppBar(title: Text(AppContent.paywallTitle)),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          Text('Premium placeholder', style: Theme.of(context).textTheme.headlineSmall),
+          Text(AppContent.paywallTitle, style: Theme.of(context).textTheme.headlineSmall),
           const SizedBox(height: 12),
-          Text('${AppContent.appName} can reserve premium flows without enabling production billing.'),
+          Text(isVi ? 'Thanh toán đang ở chế độ mô phỏng. Cần cấu hình StoreKit hoặc Google Play Billing trước khi phát hành.' : '${AppContent.appName} uses simulated billing until real store billing is reviewed.'),
           const SizedBox(height: 12),
           Card(
             child: ListTile(
               leading: const Icon(Icons.workspace_premium_outlined),
-              title: const Text('Pro study plan'),
-              subtitle: const Text('Human-reviewed billing is required before store release.'),
+              title: Text(isVi ? 'Gói học nâng cao' : 'Pro study plan'),
+              subtitle: Text(isVi ? 'Mở khóa lộ trình nâng cao sau khi con người cấu hình thanh toán thật.' : 'Human-reviewed billing is required before store release.'),
               trailing: FilledButton(
                 onPressed: () async {
-                  final message = await _purchaseService.startPlaceholderPurchase('Pro study plan');
+                  final message = await _purchaseService.startPlaceholderPurchase(isVi ? 'Gói học nâng cao' : 'Pro study plan');
                   if (mounted) setState(() => _message = message);
                 },
-                child: const Text('Preview'),
+                child: Text(isVi ? 'Xem thử' : 'Preview'),
               ),
             ),
           ),
@@ -645,7 +1172,7 @@ class _PaywallScreenState extends State<PaywallScreen> {
             Card(
               child: ListTile(
                 leading: const Icon(Icons.check_circle_outline),
-                title: const Text('Success feedback'),
+                title: Text(AppContent.successMessage),
                 subtitle: Text(_message!),
               ),
             ),
@@ -668,49 +1195,63 @@ void main() {
     await tester.pumpWidget(const ForgeTrendApp());
 
     expect(find.text(AppContent.appName), findsOneWidget);
-    expect(find.text('Start'), findsOneWidget);
+    expect(find.text(AppContent.startLabel), findsOneWidget);
 
-    await tester.tap(find.text('Start'));
+    await tester.tap(find.text(AppContent.startLabel));
     await tester.pumpAndSettle();
 
-    expect(find.text('Today'), findsOneWidget);
-    expect(find.text('Next action'), findsOneWidget);
-    expect(find.text('Core flow'), findsOneWidget);
+    expect(find.text(AppContent.homeTitle), findsWidgets);
+    expect(find.text(AppContent.featureTitle), findsWidgets);
+    expect(find.text(AppContent.progressTitle), findsOneWidget);
   });
 
   testWidgets('paywall visible when subscription enabled', (tester) async {
     await tester.pumpWidget(const ForgeTrendApp());
 
-    await tester.tap(find.text('Start'));
+    await tester.tap(find.text(AppContent.startLabel));
     await tester.pumpAndSettle();
 
     if (AppContent.subscriptionEnabled) {
-      await tester.scrollUntilVisible(find.text('Premium'), 120);
-      expect(find.text('Premium'), findsOneWidget);
+      await tester.scrollUntilVisible(find.text(AppContent.paywallTitle), 120);
+      expect(find.text(AppContent.paywallTitle), findsOneWidget);
     }
   });
 
   testWidgets('settings and privacy screen exists', (tester) async {
     await tester.pumpWidget(const ForgeTrendApp());
 
-    await tester.tap(find.text('Start'));
+    await tester.tap(find.text(AppContent.startLabel));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Settings'));
+    await tester.tap(find.text(AppContent.settingsLabel));
     await tester.pumpAndSettle();
 
-    expect(find.text('Settings'), findsWidgets);
-    expect(find.text('Privacy policy'), findsOneWidget);
+    expect(find.text(AppContent.settingsLabel), findsWidgets);
+    expect(find.text(AppContent.privacyTitle), findsOneWidget);
+  });
+
+  testWidgets('core feature flow can update progress', (tester) async {
+    await tester.pumpWidget(const ForgeTrendApp());
+
+    await tester.tap(find.text(AppContent.startLabel));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(AppContent.featureTitle).last);
+    await tester.pumpAndSettle();
+
+    expect(find.text(AppContent.featureTitle), findsWidgets);
+    await tester.tap(find.text(AppContent.primaryActionLabel));
+    await tester.pumpAndSettle();
+    expect(find.text(AppContent.successMessage), findsWidgets);
   });
 }
 """
     write_text(ctx.app_dir / "test" / "widget_test.dart", widget_test)
 
     if created_app or not (ctx.app_dir / "PRIVACY_POLICY.md").exists():
-        privacy = f"""# Privacy Policy Placeholder
+        privacy = f"""# Privacy Policy Draft
 
-{ctx.project["name"]} does not ship with production analytics, ads, or third-party data sharing in this MVP scaffold.
+{ctx.project["name"]} does not ship with production analytics, ads, or third-party data sharing in this MVP candidate.
 
-Replace this placeholder with a reviewed policy before store submission.
+Review this policy with a human before store submission.
 """
         write_text(ctx.app_dir / "PRIVACY_POLICY.md", privacy)
 
@@ -845,6 +1386,36 @@ def policy_agent(ctx: PipelineContext) -> dict[str, Any]:
     return result
 
 
+def quality_gate_agent(ctx: PipelineContext, qa_output: dict[str, Any] | None = None, policy_output: dict[str, Any] | None = None) -> dict[str, Any]:
+    brief = get_linked_brief(ctx)
+    artifacts = ctx.api.list_project_artifacts(ctx.project_id)
+    result = build_quality_gate_result(
+        project=ctx.project,
+        app_dir=ctx.app_dir,
+        artifacts=artifacts,
+        brief=brief,
+        qa_output=qa_output,
+        policy_output=policy_output,
+    )
+    quality_json_path = ctx.artifacts_dir / "quality_gate_report.json"
+    quality_md_path = ctx.artifacts_dir / "quality_gate_report.md"
+    store_md_path = ctx.artifacts_dir / "store_readiness_report.md"
+    write_text(quality_json_path, json.dumps(result, indent=2, ensure_ascii=False))
+    write_text(quality_md_path, quality_gate_report_markdown(result))
+    write_text(store_md_path, store_readiness_report_markdown(project=ctx.project, result=result, policy_output=policy_output))
+    ctx.api.artifact(ctx.project_id, "document", "quality_gate_report.json", str(quality_json_path), result)
+    ctx.api.artifact(ctx.project_id, "document", "quality_gate_report.md", str(quality_md_path), {"score": result["score"], "passed": result["passed"]})
+    ctx.api.artifact(ctx.project_id, "document", "store_readiness_report.md", str(store_md_path), {"score": result["score"], "passed": result["passed"]})
+    ctx.event(
+        "quality_gate",
+        "Product quality gate completed",
+        level="info" if result["passed"] else "warning",
+        metadata_json=result,
+    )
+    git_commit(ctx, "Record product quality gate reports")
+    return result
+
+
 def run_agent(ctx: PipelineContext, agent_name: str, fn, *, iteration: int = 0, **kwargs: Any) -> dict[str, Any]:
     ctx.update_task(agent_name, {"status": "running", "error_message": None})
     run = ctx.api.start_run(ctx.project_id, agent_name, {"project": ctx.project, "iteration": iteration}, iteration)
@@ -913,9 +1484,10 @@ def run_pipeline(api: FactoryApi, project_id: str) -> None:
             run_checked_agent(ctx, "code_agent", code_agent, iteration=iteration + 1, qa_error=error_text)
 
         policy_output = run_checked_agent(ctx, "policy_agent", policy_agent)
-        if qa_output and qa_output.get("passed") and policy_output.get("passed"):
+        quality_output = run_checked_agent(ctx, "quality_gate_agent", quality_gate_agent, qa_output=qa_output, policy_output=policy_output)
+        if qa_output and qa_output.get("passed") and policy_output.get("passed") and quality_output.get("passed"):
             api.set_project_status(project_id, "release_candidate", str(workspace))
-            write_factory_run_report(ctx, qa_output, policy_output, "release_candidate")
+            write_factory_run_report(ctx, qa_output, policy_output, "release_candidate", quality_output)
             ctx.event("pipeline", "Pipeline completed successfully")
             for task in tasks:
                 brief_id = task.get("input_json", {}).get("factory_brief_id")
@@ -930,8 +1502,19 @@ def run_pipeline(api: FactoryApi, project_id: str) -> None:
                     break
         else:
             api.set_project_status(project_id, "NEEDS_HUMAN_REVIEW", str(workspace))
-            write_factory_run_report(ctx, qa_output, policy_output, "NEEDS_HUMAN_REVIEW")
-            ctx.event("pipeline", "Pipeline needs human review", level="warning")
+            write_factory_run_report(ctx, qa_output, policy_output, "NEEDS_HUMAN_REVIEW", quality_output)
+            ctx.event(
+                "pipeline",
+                "Pipeline needs human review",
+                level="warning",
+                metadata_json={
+                    "qa_passed": bool(qa_output and qa_output.get("passed")),
+                    "policy_passed": bool(policy_output.get("passed")),
+                    "quality_passed": bool(quality_output.get("passed")),
+                    "quality_score": quality_output.get("score"),
+                    "next_action": "Review quality_gate_report.md and store_readiness_report.md, fix required changes, then rerun.",
+                },
+            )
             for task in tasks:
                 brief_id = task.get("input_json", {}).get("factory_brief_id")
                 if brief_id:

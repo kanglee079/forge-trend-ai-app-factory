@@ -15,6 +15,7 @@
     "lint": "pnpm --filter @forge/dashboard lint",
     "smoke": "node scripts/smoke_test.mjs",
     "e2e:factory": "cross-env WORKER_ENABLE_CODEX=false node scripts/e2e_factory_run.mjs",
+    "e2e:factory:vi": "cross-env WORKER_ENABLE_CODEX=false node scripts/e2e_factory_vi_run.mjs",
     "e2e:factory:codex": "cross-env WORKER_ENABLE_CODEX=true node scripts/e2e_factory_codex_run.mjs",
     "e2e:research-web": "cross-env RESEARCH_ENABLE_WEB=true node scripts/e2e_research_web.mjs",
     "e2e:ui": "playwright test",
