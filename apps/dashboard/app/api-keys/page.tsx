@@ -129,9 +129,12 @@ export default function ApiKeysPage() {
     <>
       <PageHeader
         title="API Keys"
-        description="Store provider keys encrypted at rest. The dashboard only shows masked hints."
+        description="Store provider keys encrypted at rest. Codex CLI runs currently use local codex login on the worker machine."
         action={<Button onClick={() => setOpen(true)}><Plus size={16} /> Add key</Button>}
       />
+      <Notice tone="warning">
+        Stored keys are reserved for provider/budget modes. The current code agent uses the worker machine's Codex CLI auth, so run codex login locally before starting pnpm dev:worker.
+      </Notice>
       {notice ? (
         <Notice tone={notice.tone === "success" ? "success" : "danger"}>{notice.message}</Notice>
       ) : null}

@@ -7,6 +7,7 @@ from daemon.api import FactoryApi
 from daemon.config import settings
 from daemon.cost_guard import check_cost_limit
 from daemon.provider_adapters import ADAPTERS, ProviderUnavailable, run_codex_cli
+from daemon.research import DeterministicResearchProvider, ResearchBundle, WebResearchProvider
 from daemon.safety import run_safe
 
 
@@ -315,6 +316,32 @@ def deterministic_candidates(brief: dict[str, Any], findings: list[dict[str, Any
     ]
 
 
+def parse_csv(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def build_research_bundle(brief: dict[str, Any]) -> ResearchBundle:
+    deterministic = DeterministicResearchProvider(deterministic_findings, deterministic_candidates).run(brief)
+    urls = parse_csv(settings.research_allowed_urls)
+    if brief.get("mode") != "auto_trend" or not urls:
+        return deterministic
+
+    web = WebResearchProvider(
+        urls,
+        allowed_domains=parse_csv(settings.research_allowed_domains),
+        timeout_seconds=settings.research_web_timeout_seconds,
+        delay_seconds=settings.research_web_delay_seconds,
+    ).run(brief)
+    findings = [*web.findings, *deterministic.findings]
+    candidates = deterministic.candidates
+    evidence = [*web.evidence, *deterministic.evidence]
+    for finding in findings:
+        evidence_json = dict(finding.get("evidence_json") or {})
+        evidence_json.setdefault("research_evidence", evidence[:8])
+        finding["evidence_json"] = evidence_json
+    return ResearchBundle(findings=findings, candidates=candidates, evidence=evidence)
+
+
 def write_factory_brief_report(brief: dict[str, Any], findings: list[dict[str, Any]], candidates: list[dict[str, Any]]) -> None:
     workspace_root = settings.worker_workspace_root
     if not workspace_root.is_absolute():
@@ -355,25 +382,53 @@ def write_factory_brief_report(brief: dict[str, Any], findings: list[dict[str, A
 
 def run_factory_brief(api: FactoryApi, brief_id: str) -> None:
     brief = api.get_factory_brief(brief_id)
+    api.factory_brief_event(brief_id, "Worker picked brief", "A worker picked up this factory brief.", metadata_json={"mode": brief.get("mode")})
     api.set_factory_brief_status(brief_id, "researching")
+    api.factory_brief_event(brief_id, "Research started", "Research provider pass started.")
+    bundle = build_research_bundle(brief)
     findings: list[dict[str, Any]] = []
-    for payload in deterministic_findings(brief):
+    for payload in bundle.findings:
         findings.append(api.research_finding(brief_id, payload))
+    api.factory_brief_event(
+        brief_id,
+        "Findings created",
+        f"{len(findings)} research finding(s) were stored.",
+        metadata_json={"finding_count": len(findings), "evidence": bundle.evidence[:6]},
+    )
 
     api.set_factory_brief_status(brief_id, "scoring_candidates")
+    api.factory_brief_event(brief_id, "Candidate scoring started", "Opportunity candidates are being scored.")
     candidates: list[dict[str, Any]] = []
-    for payload in deterministic_candidates(brief, findings):
+    for payload in bundle.candidates:
         candidates.append(api.opportunity_candidate(brief_id, payload))
     candidates.sort(key=lambda item: int(item.get("opportunity_score") or 0), reverse=True)
     if not candidates:
         raise RuntimeError("Factory brief produced no candidates")
+    api.factory_brief_event(
+        brief_id,
+        "Candidates created",
+        f"{len(candidates)} opportunity candidate(s) were scored.",
+        metadata_json={"candidate_count": len(candidates), "top_score": candidates[0].get("opportunity_score")},
+    )
 
     write_factory_brief_report(brief, findings, candidates)
     selected = candidates[0]
     api.set_factory_brief_status(brief_id, "selecting_candidate")
+    api.factory_brief_event(
+        brief_id,
+        "Candidate selected",
+        f"{selected['title']} selected with score {selected.get('opportunity_score')}.",
+        metadata_json={"candidate_id": selected["id"], "opportunity_score": selected.get("opportunity_score")},
+    )
     response = api.finalize_factory_brief(brief_id, selected["id"], queue_pipeline=True)
     api.set_factory_brief_status(brief_id, "project_queued")
     project_id = response["project_id"]
+    api.factory_brief_event(
+        brief_id,
+        "Project pipeline queued",
+        f"Project {project_id} was queued on {response.get('queue')}.",
+        metadata_json={"project_id": project_id, "queue": response.get("queue")},
+    )
     api.event(
         project_id,
         "factory_brief",
@@ -447,6 +502,11 @@ Finish by summarizing the files you changed. Do not run destructive commands.
 
 def run_codex_code_pass(ctx: PipelineContext, iteration: int, qa_error: str | None = None) -> dict[str, Any]:
     prompt = build_codex_prompt(ctx, iteration, qa_error)
+    ctx.event(
+        "code_agent",
+        "Codex CLI pass started",
+        metadata_json={"iteration": iteration, "timeout_seconds": settings.worker_codex_timeout_seconds},
+    )
     completed = run_codex_cli(prompt, cwd=ctx.workspace, workspace=ctx.workspace)
     level = "info" if completed.returncode == 0 else "warning"
     ctx.event(
@@ -649,7 +709,7 @@ Replace this placeholder with a reviewed policy before store submission.
             provider_result = {"provider": "codex_cli", "error": str(exc)}
             ctx.event(
                 "code_agent",
-                "Codex CLI pass failed; continuing to QA with current workspace",
+                "Codex CLI pass failed or timed out; continuing to QA with current workspace",
                 level="warning",
                 stderr=str(exc),
                 metadata_json={"iteration": iteration},

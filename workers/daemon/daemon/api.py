@@ -34,6 +34,21 @@ class FactoryApi:
     def set_factory_brief_status(self, brief_id: str, status: str) -> dict[str, Any]:
         return self._request("PATCH", f"/internal/factory-briefs/{brief_id}/status", json={"status": status})
 
+    def factory_brief_event(
+        self,
+        brief_id: str,
+        title: str,
+        message: str,
+        *,
+        level: str = "info",
+        metadata_json: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/internal/factory-briefs/{brief_id}/events",
+            json={"level": level, "title": title, "message": message, "metadata_json": metadata_json or {}},
+        )
+
     def research_finding(self, brief_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", f"/internal/factory-briefs/{brief_id}/findings", json=payload)
 

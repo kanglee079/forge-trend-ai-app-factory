@@ -236,6 +236,13 @@ class FactoryBriefRunResponse(BaseModel):
     queue: str
 
 
+class FactoryBriefEventCreate(BaseModel):
+    level: str = "info"
+    title: str
+    message: str
+    metadata_json: dict = Field(default_factory=dict)
+
+
 class FactoryBriefRead(ApiModel):
     id: UUID
     mode: str

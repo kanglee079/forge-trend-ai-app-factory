@@ -16,8 +16,12 @@ class WorkerSettings(BaseSettings):
     worker_name: str = "local-worker"
     worker_code_provider: str = "codex_cli"
     worker_codex_model: str | None = None
-    worker_codex_timeout_seconds: int = 900
+    worker_codex_timeout_seconds: int = 180
     worker_enable_codex: bool = True
+    research_allowed_urls: str = ""
+    research_allowed_domains: str = "github.com,pub.dev,producthunt.com,reddit.com"
+    research_web_timeout_seconds: float = 8.0
+    research_web_delay_seconds: float = 1.0
 
 
 settings = WorkerSettings()

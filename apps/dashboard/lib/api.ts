@@ -309,6 +309,7 @@ export const api = {
   updateFactoryState: (mode: FactoryState["mode"]) => request<FactoryState>("/factory/state", { method: "PATCH", body: JSON.stringify({ mode }) }),
   factoryBriefs: () => request<FactoryBrief[]>("/factory-briefs"),
   factoryBrief: (id: string) => request<FactoryBriefDetail>(`/factory-briefs/${id}`),
+  factoryBriefEvents: (id: string) => request<Notification[]>(`/factory-briefs/${id}/events`),
   createFactoryBrief: (body: unknown) => request<FactoryBrief>("/factory-briefs", { method: "POST", body: JSON.stringify(body) }),
   startFactoryBrief: (id: string) => request<{ factory_brief_id: string; status: string; queue: string }>(`/factory-briefs/${id}/start`, { method: "POST" }),
   finalizeFactoryBrief: (id: string, candidateId: string, queuePipeline = true) =>

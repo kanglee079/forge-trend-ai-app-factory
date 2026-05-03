@@ -26,6 +26,13 @@ def heartbeat_loop(api: FactoryApi, worker_id: str, current_job: dict[str, str |
         shutdown.wait(settings.worker_heartbeat_seconds)
 
 
+def safe_heartbeat(api: FactoryApi, worker_id: str, status: str = "online", current_job_id: str | None = None) -> None:
+    try:
+        api.heartbeat(worker_id, status=status, current_job_id=current_job_id)
+    except Exception as exc:
+        print(f"heartbeat failed: {exc}")
+
+
 def main() -> None:
     signal.signal(signal.SIGINT, handle_shutdown)
     signal.signal(signal.SIGTERM, handle_shutdown)
@@ -45,7 +52,7 @@ def main() -> None:
             factory_state = api.factory_state()
             mode = factory_state.get("mode", "running")
             if mode != "running":
-                api.heartbeat(worker_id, status=mode, current_job_id=None)
+                safe_heartbeat(api, worker_id, status=mode, current_job_id=None)
                 shutdown.wait(3)
                 continue
         except Exception as exc:
@@ -60,7 +67,7 @@ def main() -> None:
             brief_id = payload["factory_brief_id"]
             current_job["id"] = brief_id
             try:
-                api.heartbeat(worker_id, status="busy", current_job_id=brief_id)
+                safe_heartbeat(api, worker_id, status="busy", current_job_id=brief_id)
                 run_factory_brief(api, brief_id)
             except Exception as exc:
                 try:
@@ -70,22 +77,22 @@ def main() -> None:
                 print(f"factory brief failed for {brief_id}: {exc}")
             finally:
                 current_job["id"] = None
-                api.heartbeat(worker_id, status="online", current_job_id=None)
+                safe_heartbeat(api, worker_id, status="online", current_job_id=None)
             continue
 
         project_id = payload["project_id"]
         current_job["id"] = project_id
         try:
-            api.heartbeat(worker_id, status="busy", current_job_id=project_id)
+            safe_heartbeat(api, worker_id, status="busy", current_job_id=project_id)
             run_pipeline(api, project_id)
         except Exception as exc:
             api.event(project_id, "pipeline", "Pipeline crashed", level="error", stderr=str(exc))
             print(f"pipeline failed for {project_id}: {exc}")
         finally:
             current_job["id"] = None
-            api.heartbeat(worker_id, status="online", current_job_id=None)
+            safe_heartbeat(api, worker_id, status="online", current_job_id=None)
 
-    api.heartbeat(worker_id, status="offline", current_job_id=None)
+    safe_heartbeat(api, worker_id, status="offline", current_job_id=None)
     time.sleep(0.2)
 
 

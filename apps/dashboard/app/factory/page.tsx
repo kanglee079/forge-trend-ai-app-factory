@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Bot, CheckCircle2, Loader2, Play, RefreshCw, Rocket, Wand2 } from "lucide-react";
-import { api, ApiError, FactoryBrief, FactoryBriefDetail } from "@/lib/api";
+import { api, ApiError, FactoryBrief, FactoryBriefDetail, Notification } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
 import { Badge, Button, Card, Input, Label, Notice, PageHeader, Select, Skeleton, StatusBadge, Textarea } from "@/components/ui";
 import { useFeedback } from "@/components/feedback";
@@ -19,6 +19,7 @@ export default function FactoryPage() {
   const [briefs, setBriefs] = useState<FactoryBrief[]>([]);
   const [selected, setSelected] = useState<FactoryBriefDetail | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [events, setEvents] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [startingId, setStartingId] = useState<string | null>(null);
@@ -32,10 +33,13 @@ export default function FactoryPage() {
       setBriefs(items);
       const targetId = selectId ?? selectedId ?? items[0]?.id;
       if (targetId) {
-        setSelected(await api.factoryBrief(targetId));
+        const [detail, eventItems] = await Promise.all([api.factoryBrief(targetId), api.factoryBriefEvents(targetId).catch(() => [])]);
+        setSelected(detail);
+        setEvents(eventItems);
         setSelectedId(targetId);
       } else {
         setSelected(null);
+        setEvents([]);
         setSelectedId(null);
       }
     } catch (error) {
@@ -312,6 +316,20 @@ export default function FactoryPage() {
 
               <div className="grid gap-5 xl:grid-cols-[0.8fr_1.2fr]">
                 <div>
+                  <h3 className="mb-3 text-sm font-semibold">Factory Timeline</h3>
+                  <div className="mb-5 space-y-3">
+                    {events.map((event) => (
+                      <div key={event.id} className="rounded-md border border-border bg-background p-3">
+                        <div className="mb-1 flex flex-wrap items-center gap-2">
+                          <Badge tone={event.level === "success" ? "success" : event.level === "warning" ? "warning" : event.level === "error" || event.level === "danger" ? "danger" : "neutral"}>{event.level}</Badge>
+                          <span className="text-xs text-muted-foreground">{formatDate(event.created_at)}</span>
+                        </div>
+                        <div className="font-medium">{event.title}</div>
+                        <p className="mt-1 text-sm text-muted-foreground">{event.message}</p>
+                      </div>
+                    ))}
+                    {!events.length ? <div className="rounded-md bg-muted p-4 text-sm text-muted-foreground">Timeline events appear as the worker processes this brief.</div> : null}
+                  </div>
                   <h3 className="mb-3 text-sm font-semibold">Research Findings</h3>
                   <div className="space-y-3">
                     {selected.findings.map((finding) => (

@@ -33,6 +33,17 @@ pnpm db:migrate
 pnpm dev
 ```
 
+Clean local reset when ports or services are stale:
+
+```bash
+pnpm reset:local
+codex login
+pnpm dev
+pnpm e2e:factory
+```
+
+`pnpm reset:local` stops stale dashboard/API/worker processes on ports `3000` and `8000`, starts Postgres/Redis/MinIO, and runs migrations. It preserves generated workspaces unless you explicitly run with `RESET_WORKSPACES=true`.
+
 Open `http://localhost:3000` only if you want the browser view; the normal app entry is `run.command`.
 
 To run API and dashboard in Docker after setup:
@@ -47,6 +58,8 @@ Run the worker locally for Flutter/Android QA and local Codex control:
 codex login
 pnpm dev:worker
 ```
+
+Important: dashboard API keys are encrypted stored provider keys for future direct-provider/budget modes. The current Codex code agent uses the worker machine's local Codex CLI authentication, so `codex login` is still required on that machine.
 
 The Docker worker is behind the optional `worker` Compose profile because it cannot see the host machine's Flutter SDK, Android SDK, or Codex login by default:
 
@@ -91,13 +104,30 @@ Windows supports Android builds. Use WSL2 for more stable Unix-style coding CLI 
 ## Typical workflow
 
 1. Open `run.command` or `run.bat`.
-2. Add provider API keys in `API Keys`; they are encrypted and only masked hints are returned.
-3. Log in to Codex CLI on the worker machine with `codex login` if you want the code agent to use Codex.
+2. Run `pnpm doctor:ports` if anything returns 404 unexpectedly.
+3. Log in to Codex CLI on the worker machine with `codex login`.
 4. Start the worker with `pnpm dev:worker` if it is not already running.
-5. Create an idea in `Ideas`.
-6. Create a project in `Projects`.
-7. Click `Run` or `Run pipeline`.
-8. Watch project detail tabs for PRD, agent timeline, logs, QA, policy, and artifacts.
+5. Open `Factory`, enter a Factory Brief, and click `Start`.
+6. Watch the Factory timeline for queued, worker picked, research, candidates, project created, and pipeline queued.
+7. Open the linked project and watch Research, Tasks, Code Agent, QA, Policy, and Artifacts.
+
+For an automated proof run:
+
+```bash
+pnpm e2e:factory
+```
+
+The E2E script creates a brief, starts it, waits for findings/candidates/project selection, waits for the project to finish in `release_candidate` or `NEEDS_HUMAN_REVIEW`, then prints tasks, logs, QA, policy, and artifacts. If it fails, the last project events and QA stderr are printed so you can see the exact broken step.
+
+## Stale port checks
+
+The dashboard defaults to `http://localhost:8000`. If an older API process is still bound to port `8000`, the UI can show 404s for new routes such as `/factory-briefs` even though the source code is correct.
+
+```bash
+pnpm doctor:ports
+```
+
+This prints port ownership, PID/command where possible, and detects a stale API when `/health` works but `/settings`, `/factory-briefs`, or `/events` return 404.
 
 ## API
 
@@ -109,6 +139,11 @@ Public MVP routes:
 - `POST /ideas`, `GET /ideas`
 - `POST /projects`, `GET /projects`, `GET /projects/{id}`
 - `POST /projects/{id}/run-pipeline`
+- `POST /factory-briefs`, `GET /factory-briefs`, `GET /factory-briefs/{id}`
+- `POST /factory-briefs/{id}/start`, `POST /factory-briefs/{id}/finalize`
+- `GET /factory-briefs/{id}/events`, `GET /factory-briefs/{id}/findings`, `GET /factory-briefs/{id}/candidates`
+- `GET /projects/{id}/tasks`, `POST /projects/{id}/tasks/{task_id}/run`
+- `GET /notifications`, `POST /notifications/read-all`
 - `GET /projects/{id}/events`
 - `GET /projects/{id}/qa`
 - `GET /projects/{id}/policy`
@@ -118,9 +153,10 @@ The worker also uses `/internal/*` endpoints to write events and results.
 
 ## Known limitations
 
-- Trend and review mining agents are placeholders in this MVP.
+- Auto trend mode has a provider boundary and deterministic fallback. Optional low-volume web evidence can be enabled with `RESEARCH_ALLOWED_URLS` and `RESEARCH_ALLOWED_DOMAINS`; broad market connectors for app stores, Reddit, and Product Hunt are still future work.
 - Codex CLI is wired for code customization and QA fix passes. Aider and OpenHands remain placeholders.
 - Codex CLI uses the worker machine's local `codex login` auth or environment, not decrypted dashboard API keys.
+- A successful local factory run requires internet access for Codex/Flutter dependencies, local Codex auth, Flutter, Java, Android SDK/platform tools, Postgres, Redis, and the worker daemon.
 - MinIO is included, but artifacts are stored as local workspace paths in MVP.
 - The Docker worker image is optional and best for connectivity checks; use the local worker for real Flutter, Android, and Codex CLI runs.
 - iOS build is a macOS placeholder; Windows is Android-only.

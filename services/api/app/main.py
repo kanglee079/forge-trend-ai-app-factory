@@ -1,6 +1,8 @@
+import os
 import shutil
 import socket
 import subprocess
+import urllib.request
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -52,6 +54,7 @@ from app.schemas import (
     BuildCreate,
     DoctorCheck,
     DoctorResponse,
+    FactoryBriefEventCreate,
     FactoryBriefFinalizeRequest,
     FactoryBriefCreate,
     FactoryBriefDetail,
@@ -128,6 +131,22 @@ def run_check(command: list[str], timeout: int = 8) -> tuple[bool, str]:
     return result.returncode == 0, output[0] if output else f"exit {result.returncode}"
 
 
+def http_check(url: str, timeout: float = 3.0) -> tuple[bool, str]:
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            return response.status < 500, f"HTTP {response.status}"
+    except Exception as exc:
+        return False, str(exc)
+
+
+def env_path_check(*names: str) -> tuple[bool, str]:
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return True, f"{name}={value}"
+    return False, f"missing {'/'.join(names)}"
+
+
 def doctor_check(id: str, label: str, ok: bool, detail: str, *, required: bool = True, guidance: str | None = None) -> DoctorCheck:
     return DoctorCheck(id=id, label=label, status="passed" if ok else "failed", detail=detail, required=required, guidance=guidance)
 
@@ -149,6 +168,26 @@ def build_doctor_report(db: Session) -> DoctorResponse:
         ok, detail = run_check(command)
         checks.append(doctor_check(id, label, ok, detail, required=required, guidance=None if ok else guidance))
 
+    network_checks = [
+        ("internet", "Internet connectivity", "https://www.google.com/generate_204", True, "Check network/VPN/firewall connectivity."),
+        ("github", "GitHub reachable", "https://github.com", False, "GitHub is useful for template and dependency workflows."),
+        ("pub_dev", "pub.dev reachable", "https://pub.dev", False, "Flutter pub get needs access to pub.dev."),
+    ]
+    for id, label, url, required, guidance in network_checks:
+        ok, detail = http_check(url)
+        checks.append(doctor_check(id, label, ok, detail, required=required, guidance=None if ok else guidance))
+
+    java_ok, java_detail = run_check(["java", "-version"])
+    checks.append(doctor_check("java", "Java runtime", java_ok, java_detail, required=False, guidance="Install a JDK for Android builds."))
+    adb_ok, adb_detail = run_check(["adb", "--version"])
+    checks.append(doctor_check("adb", "Android Debug Bridge", adb_ok, adb_detail, required=False, guidance="Install Android platform tools."))
+    android_ok, android_detail = env_path_check("ANDROID_HOME", "ANDROID_SDK_ROOT")
+    checks.append(doctor_check("android_sdk_env", "Android SDK path", android_ok, android_detail, required=False, guidance="Set ANDROID_HOME or ANDROID_SDK_ROOT."))
+    flutter_doctor_ok, flutter_doctor_detail = run_check(["flutter", "doctor", "-v"], timeout=20)
+    checks.append(doctor_check("flutter_doctor", "Flutter doctor", flutter_doctor_ok, flutter_doctor_detail, required=False, guidance="Run flutter doctor -v and fix Android toolchain issues."))
+    codex_auth_ok, codex_auth_detail = run_check(["codex", "exec", "--help"], timeout=8)
+    checks.append(doctor_check("codex_auth_smoke", "Codex CLI smoke", codex_auth_ok, codex_auth_detail, required=False, guidance="Run codex login on this worker machine."))
+
     redis_ok, redis_detail = ping_host("127.0.0.1", 6379)
     checks.append(doctor_check("redis", "Redis", redis_ok, redis_detail, guidance="Run docker compose up -d redis."))
     postgres_ok, postgres_detail = ping_host("127.0.0.1", 5432)
@@ -156,6 +195,7 @@ def build_doctor_report(db: Session) -> DoctorResponse:
     minio_ok, minio_detail = ping_host("127.0.0.1", 9000)
     checks.append(doctor_check("minio", "MinIO", minio_ok, minio_detail, required=False, guidance="Run docker compose up -d minio."))
     checks.append(doctor_check("api", "API", True, "FastAPI responded to /doctor."))
+    checks.append(doctor_check("api_route_freshness", "API route freshness", True, "/factory-briefs and /settings are registered in this API process."))
 
     workers = list(db.scalars(select(Worker)).all())
     online_workers = [worker for worker in workers if worker.status == "online"]
@@ -226,6 +266,27 @@ def create_notification(
     notification = Notification(level=level, title=title, message=redact(message) or "", entity_type=entity_type, entity_id=entity_id)
     db.add(notification)
     return notification
+
+
+def factory_brief_event(
+    db: Session,
+    brief: FactoryBrief,
+    *,
+    level: str,
+    title: str,
+    message: str,
+    metadata_json: dict | None = None,
+) -> Notification:
+    detail = dict(metadata_json or {})
+    detail["factory_brief_id"] = str(brief.id)
+    return create_notification(
+        db,
+        level=level,
+        title=title,
+        message=message,
+        entity_type="factory_brief",
+        entity_id=brief.id,
+    )
 
 
 def slugify(value: str) -> str:
@@ -330,13 +391,12 @@ def create_factory_brief(payload: FactoryBriefCreate, db: Session = Depends(get_
     item = FactoryBrief(**payload.model_dump(), status="draft")
     db.add(item)
     db.flush()
-    create_notification(
+    factory_brief_event(
         db,
+        item,
         level="info",
         title="Factory brief created",
         message=f"{item.title} is ready to start.",
-        entity_type="factory_brief",
-        entity_id=item.id,
     )
     db.commit()
     db.refresh(item)
@@ -362,13 +422,12 @@ def start_factory_brief(id: UUID, db: Session = Depends(get_db)) -> FactoryBrief
     brief = get_or_404(db, FactoryBrief, id)
     brief.status = "queued"
     queue = enqueue_factory_brief(brief.id)
-    create_notification(
+    factory_brief_event(
         db,
+        brief,
         level="info",
         title="Factory brief queued",
         message=f"{brief.title} was queued for autonomous research and project creation.",
-        entity_type="factory_brief",
-        entity_id=brief.id,
     )
     db.commit()
     return FactoryBriefRunResponse(factory_brief_id=brief.id, status=brief.status, queue=queue)
@@ -381,6 +440,34 @@ def patch_factory_brief_status(id: UUID, payload: FactoryBriefStatusPatch, db: S
     db.commit()
     db.refresh(brief)
     return brief
+
+
+@app.post("/internal/factory-briefs/{id}/events", response_model=NotificationRead)
+def create_factory_brief_event(id: UUID, payload: FactoryBriefEventCreate, db: Session = Depends(get_db)) -> Notification:
+    brief = get_or_404(db, FactoryBrief, id)
+    notification = factory_brief_event(
+        db,
+        brief,
+        level=payload.level,
+        title=payload.title,
+        message=payload.message,
+        metadata_json=payload.metadata_json,
+    )
+    db.commit()
+    db.refresh(notification)
+    return notification
+
+
+@app.get("/factory-briefs/{id}/events", response_model=list[NotificationRead])
+def list_factory_brief_events(id: UUID, db: Session = Depends(get_db)) -> list[Notification]:
+    get_or_404(db, FactoryBrief, id)
+    return list(
+        db.scalars(
+            select(Notification)
+            .where(Notification.entity_type == "factory_brief", Notification.entity_id == id)
+            .order_by(desc(Notification.created_at))
+        ).all()
+    )
 
 
 @app.post("/internal/factory-briefs/{id}/findings", response_model=ResearchFindingRead)
@@ -442,6 +529,13 @@ def finalize_factory_brief(id: UUID, payload: FactoryBriefFinalizeRequest, db: S
             project.status = "queued"
             queue = enqueue_pipeline(project.id)
             db.add(AgentEvent(project_id=project.id, step="factory_brief", level="info", message="Existing factory project queued again"))
+            factory_brief_event(
+                db,
+                brief,
+                level="info",
+                title="Existing project queued",
+                message=f"{project.name} was queued again from this factory brief.",
+            )
         db.commit()
         return PipelineRunResponse(project_id=project.id, status=project.status, queue=queue)
 
@@ -522,6 +616,14 @@ def finalize_factory_brief(id: UUID, payload: FactoryBriefFinalizeRequest, db: S
     brief.status = "project_queued" if payload.queue_pipeline else "project_created"
     brief.selected_idea_id = idea.id
     brief.selected_project_id = project.id
+    factory_brief_event(
+        db,
+        brief,
+        level="success",
+        title="Factory project created",
+        message=f"{project.name} was created and linked to this brief.",
+        metadata_json={"project_id": str(project.id), "candidate_id": str(candidate.id)},
+    )
     create_notification(
         db,
         level="success",
@@ -534,6 +636,14 @@ def finalize_factory_brief(id: UUID, payload: FactoryBriefFinalizeRequest, db: S
     if payload.queue_pipeline:
         queue = enqueue_pipeline(project.id)
         db.add(AgentEvent(project_id=project.id, step="factory_brief", level="info", message="Project created from factory brief and pipeline queued"))
+        factory_brief_event(
+            db,
+            brief,
+            level="info",
+            title="Pipeline queued",
+            message=f"{project.name} was queued on {queue}.",
+            metadata_json={"project_id": str(project.id), "queue": queue},
+        )
     db.commit()
     return PipelineRunResponse(project_id=project.id, status=project.status, queue=queue)
 

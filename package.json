@@ -14,6 +14,9 @@
     "build": "pnpm --filter @forge/shared build && pnpm --filter @forge/dashboard build",
     "lint": "pnpm --filter @forge/dashboard lint",
     "smoke": "node scripts/smoke_test.mjs",
+    "e2e:factory": "node scripts/e2e_factory_run.mjs",
+    "doctor:ports": "node scripts/doctor_ports.mjs",
+    "reset:local": "node scripts/reset_local.mjs",
     "db:migrate": "node scripts/venv-run.mjs services/api -m alembic upgrade head",
     "doctor": "node scripts/venv-run.mjs . scripts/doctor.py"
   }
