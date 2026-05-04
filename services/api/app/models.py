@@ -172,6 +172,55 @@ class CostUsage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class RunEvaluation(Base):
+    __tablename__ = "run_evaluations"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    brief_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("factory_briefs.id"), nullable=True)
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=True)
+    category: Mapped[str] = mapped_column(String(120), nullable=True)
+    language: Mapped[str] = mapped_column(String(80), nullable=True)
+    monetization: Mapped[str] = mapped_column(String(80), nullable=True)
+    provider: Mapped[str] = mapped_column(String(120), default="deterministic")
+    archetype: Mapped[str] = mapped_column(String(120), nullable=True)
+    final_status: Mapped[str] = mapped_column(String(80))
+    qa_passed: Mapped[bool] = mapped_column(Boolean, default=False)
+    quality_score: Mapped[int] = mapped_column(Integer, default=0)
+    policy_passed: Mapped[bool] = mapped_column(Boolean, default=False)
+    store_readiness_score: Mapped[int] = mapped_column(Integer, default=0)
+    time_to_complete_seconds: Mapped[int] = mapped_column(Integer, default=0)
+    fix_iterations: Mapped[int] = mapped_column(Integer, default=0)
+    failure_reason: Mapped[str] = mapped_column(Text, nullable=True)
+    human_review_reason: Mapped[str] = mapped_column(Text, nullable=True)
+    metrics_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class FailurePattern(Base):
+    __tablename__ = "failure_patterns"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    taxonomy: Mapped[str] = mapped_column(String(120), unique=True)
+    count: Mapped[int] = mapped_column(Integer, default=0)
+    last_project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=True)
+    last_reason: Mapped[str] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class LearningRule(Base):
+    __tablename__ = "learning_rules"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    rule_key: Mapped[str] = mapped_column(String(160), unique=True)
+    description: Mapped[str] = mapped_column(Text)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    confidence_score: Mapped[int] = mapped_column(Integer, default=50)
+    trigger_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    action_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class FactoryState(Base):
     __tablename__ = "factory_state"
 

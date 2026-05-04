@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "dev:dashboard": "pnpm --filter @forge/dashboard dev",
+    "serve:dashboard": "pnpm --filter @forge/dashboard build && pnpm --filter @forge/dashboard start",
     "dev:api": "node scripts/venv-run.mjs services/api -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload",
     "dev:worker": "node scripts/venv-run.mjs workers/daemon -m daemon.main",
     "desktop": "pnpm --filter @forge/desktop start",
@@ -21,6 +22,10 @@
     "e2e:ui": "playwright test",
     "e2e:generated-app-quality": "node scripts/e2e_generated_app_quality.mjs",
     "e2e:first-run": "node scripts/e2e_first_run.mjs",
+    "e2e:one-click-sim": "node scripts/e2e_one_click_sim.mjs",
+    "e2e:autopilot": "node scripts/e2e_autopilot.mjs",
+    "e2e:learning": "node scripts/e2e_learning.mjs",
+    "e2e:internal-test-package": "node scripts/e2e_internal_test_package.mjs",
     "doctor:ports": "node scripts/doctor_ports.mjs",
     "reset:local": "node scripts/reset_local.mjs",
     "db:migrate": "node scripts/venv-run.mjs services/api -m alembic upgrade head",

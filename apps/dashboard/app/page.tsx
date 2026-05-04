@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Bot, CheckCircle2, FolderOpen, Loader2, PlusCircle, RefreshCw, Search, Settings2, Smartphone } from "lucide-react";
 import { AgentEvent, api, ApiError, ApiKey, DoctorResponse, Project, Worker } from "@/lib/api";
@@ -17,9 +18,10 @@ type OverviewState = {
   events: AgentEvent[];
 };
 
-const modeStorageKey = "forge-overview-mode";
+const modeStorageKey = "forge-ui-mode";
 
 export default function OverviewPage() {
+  const router = useRouter();
   const { t } = useLanguage();
   const [data, setData] = useState<OverviewState | null>(null);
   const [loading, setLoading] = useState(true);
@@ -33,6 +35,7 @@ export default function OverviewPage() {
   function setMode(nextAdvanced: boolean) {
     setAdvanced(nextAdvanced);
     window.localStorage.setItem(modeStorageKey, nextAdvanced ? "advanced" : "simple");
+    window.dispatchEvent(new Event("forge-ui-mode-change"));
   }
 
   async function load({ quiet = false } = {}) {
@@ -58,6 +61,14 @@ export default function OverviewPage() {
   useEffect(() => {
     load({ quiet: true }).catch(console.error);
   }, []);
+
+  useEffect(() => {
+    if (!data || loading) return;
+    if (data.projects.length === 0 && window.localStorage.getItem("forge-first-create-redirect") !== "done") {
+      window.localStorage.setItem("forge-first-create-redirect", "done");
+      router.push("/create");
+    }
+  }, [data, loading, router]);
 
   const onlineWorkers = data?.workers.filter((worker) => worker.status === "online") ?? [];
   const readyWorkers = onlineWorkers.filter(isReadyWorker);

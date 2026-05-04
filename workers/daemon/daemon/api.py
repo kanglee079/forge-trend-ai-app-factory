@@ -157,6 +157,9 @@ class FactoryApi:
             json={"status": status, "platform": platform, "artifact_path": artifact_path, "logs": logs},
         )
 
+    def run_evaluation(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/internal/learning/run-evaluations", json=payload)
+
     def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         response = self.client.request(method, path, **kwargs)
         response.raise_for_status()

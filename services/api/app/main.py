@@ -4,6 +4,7 @@ import socket
 import subprocess
 import urllib.request
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -24,7 +25,9 @@ from app.models import (
     CostUsage,
     FactoryBrief,
     FactoryState,
+    FailurePattern,
     Idea,
+    LearningRule,
     Notification,
     OpportunityCandidate,
     PolicyResult,
@@ -32,10 +35,12 @@ from app.models import (
     ProjectTask,
     QAResult,
     ResearchFinding,
+    RunEvaluation,
     TrendSource,
     Worker,
 )
 from app.queue import enqueue_factory_brief, enqueue_pipeline
+from app.plugin_registry import PLUGINS
 from app.schemas import (
     ActionResponse,
     AgentEventCreate,
@@ -63,9 +68,12 @@ from app.schemas import (
     FactoryBriefStatusPatch,
     FactoryStatePatch,
     FactoryState as FactoryStateSchema,
+    FailurePatternRead,
     HealthResponse,
     IdeaCreate,
     IdeaRead,
+    LearningRuleRead,
+    LearningSummary,
     NotificationCreate,
     NotificationRead,
     OpportunityCandidateCreate,
@@ -80,10 +88,15 @@ from app.schemas import (
     ProjectTaskCreate,
     ProjectTaskPatch,
     ProjectTaskRead,
+    PluginStatus,
+    ProviderStatus,
+    QueueSummary,
     QAResultCreate,
     QAResultRead,
     ResearchFindingCreate,
     ResearchFindingRead,
+    RunEvaluationCreate,
+    RunEvaluationRead,
     WorkerHeartbeat,
     WorkerRead,
     WorkerRegister,
@@ -461,6 +474,94 @@ def unique_project_slug(db: Session, base: str) -> str:
     return candidate
 
 
+def classify_failure_reason(reason: str | None) -> str:
+    text = (reason or "").lower()
+    if not text:
+        return "none"
+    if "codex" in text and "auth" in text:
+        return "provider_auth_missing"
+    if "pub get" in text:
+        return "flutter_pub_get_failed"
+    if "analyze" in text:
+        return "flutter_analyze_failed"
+    if "test" in text:
+        return "flutter_test_failed"
+    if "build" in text or "apk" in text:
+        return "flutter_build_failed"
+    if "generic" in text or "placeholder" in text:
+        return "generic_template_copy"
+    if "vietnamese" in text or "missing_vietnamese" in text:
+        return "missing_vietnamese"
+    if "policy" in text or "trademark" in text:
+        return "policy_risk"
+    if "store asset" in text:
+        return "store_asset_missing"
+    if "budget" in text:
+        return "budget_exceeded"
+    if "timeout" in text:
+        return "timeout"
+    return "unknown"
+
+
+def upsert_learning_rule(db: Session, *, rule_key: str, description: str, trigger_json: dict, action_json: dict, confidence_score: int = 60) -> LearningRule:
+    rule = db.scalar(select(LearningRule).where(LearningRule.rule_key == rule_key))
+    if not rule:
+        rule = LearningRule(
+            rule_key=rule_key,
+            description=description,
+            trigger_json=trigger_json,
+            action_json=action_json,
+            confidence_score=confidence_score,
+        )
+        db.add(rule)
+    else:
+        rule.description = description
+        rule.trigger_json = trigger_json
+        rule.action_json = action_json
+        rule.confidence_score = max(rule.confidence_score, confidence_score)
+        rule.enabled = True
+    return rule
+
+
+def record_learning_from_evaluation(db: Session, evaluation: RunEvaluation) -> None:
+    taxonomy = classify_failure_reason(evaluation.failure_reason or evaluation.human_review_reason)
+    if taxonomy != "none":
+        pattern = db.scalar(select(FailurePattern).where(FailurePattern.taxonomy == taxonomy))
+        if not pattern:
+            pattern = FailurePattern(taxonomy=taxonomy, count=0)
+            db.add(pattern)
+        pattern.count += 1
+        pattern.last_project_id = evaluation.project_id
+        pattern.last_reason = evaluation.failure_reason or evaluation.human_review_reason
+        if taxonomy in {"generic_template_copy", "weak_core_feature"}:
+            upsert_learning_rule(
+                db,
+                rule_key="force_deeper_feature_flow",
+                description="Nếu app fail vì copy generic hoặc luồng tính năng yếu, lần sau ép blueprint sâu hơn và thêm core flow tương tác.",
+                trigger_json={"failure_taxonomy": taxonomy},
+                action_json={"blueprint_depth": "deep", "require_interactive_core_flow": True},
+                confidence_score=75,
+            )
+        if taxonomy == "provider_auth_missing":
+            upsert_learning_rule(
+                db,
+                rule_key="fallback_when_provider_auth_missing",
+                description="Nếu Codex/Aider thiếu auth, fallback deterministic và báo rõ provider chưa sẵn sàng.",
+                trigger_json={"failure_taxonomy": taxonomy},
+                action_json={"provider": "deterministic", "notify_user": True},
+                confidence_score=80,
+            )
+    elif evaluation.final_status == "release_candidate" and (evaluation.category or "").lower() == "education" and evaluation.language == "vi":
+        upsert_learning_rule(
+            db,
+            rule_key="prefer_education_archetype_vi",
+            description="Education + tiếng Việt đang pass tốt, ưu tiên education_archetype cho các brief tương tự.",
+            trigger_json={"category": "Education", "language": "vi", "final_status": "release_candidate"},
+            action_json={"preferred_archetype": "education"},
+            confidence_score=70,
+        )
+
+
 def build_brief_detail(db: Session, brief: FactoryBrief) -> FactoryBriefDetail:
     findings = list(db.scalars(select(ResearchFinding).where(ResearchFinding.factory_brief_id == brief.id).order_by(desc(ResearchFinding.created_at))).all())
     candidates = list(
@@ -486,6 +587,124 @@ def health() -> HealthResponse:
 @app.get("/doctor", response_model=DoctorResponse)
 def doctor(db: Session = Depends(get_db)) -> DoctorResponse:
     return build_doctor_report(db)
+
+
+@app.get("/providers/status", response_model=list[ProviderStatus])
+def provider_status(db: Session = Depends(get_db)) -> list[ProviderStatus]:
+    codex_available = shutil.which("codex") is not None
+    aider_available = shutil.which("aider") is not None
+    codex_auth_ok = False
+    codex_auth_detail = "not installed"
+    if codex_available:
+      codex_auth_ok, codex_auth_detail = run_check(["codex", "login", "status"], timeout=8)
+    evaluations = list(db.scalars(select(RunEvaluation).order_by(desc(RunEvaluation.created_at)).limit(200)).all())
+
+    def last(provider: str, success: bool) -> datetime | None:
+        for item in evaluations:
+            if item.provider == provider and ((item.final_status == "release_candidate") == success):
+                return item.created_at
+        return None
+
+    return [
+        ProviderStatus(
+            id="codex_cli",
+            name="Codex CLI",
+            enabled=settings.worker_enable_codex,
+            available=codex_available,
+            auth_status="authenticated" if codex_auth_ok else codex_auth_detail,
+            current_model=settings.worker_codex_model or None,
+            last_success=last("codex_cli", True),
+            last_failure=last("codex_cli", False),
+            recommended_action="Sẵn sàng dùng coding pass." if codex_auth_ok else "Cài Codex CLI và chạy codex login, hoặc dùng deterministic fallback.",
+        ),
+        ProviderStatus(
+            id="aider_cli",
+            name="Aider CLI",
+            enabled=False,
+            available=aider_available,
+            auth_status="optional",
+            last_success=last("aider", True),
+            last_failure=last("aider", False),
+            recommended_action="Tuỳ chọn refinement pass; không bắt buộc.",
+        ),
+        ProviderStatus(
+            id="deterministic",
+            name="Deterministic generator",
+            enabled=True,
+            available=True,
+            auth_status="not required",
+            last_success=last("deterministic", True),
+            last_failure=last("deterministic", False),
+            recommended_action="Dùng cho smoke run, fallback và máy chưa có LLM provider.",
+        ),
+    ]
+
+
+@app.get("/plugins/registry", response_model=list[PluginStatus])
+def plugin_registry() -> list[PluginStatus]:
+    missing_by_id = {
+        "codex_cli": [] if shutil.which("codex") else ["codex CLI not found"],
+        "aider_cli": [] if shutil.which("aider") else ["aider CLI not found"],
+        "web_research": [] if settings.research_allowed_urls.strip() else ["RESEARCH_ALLOWED_URLS not configured"],
+    }
+    return [
+        PluginStatus(**item, missing_dependencies=missing_by_id.get(item["id"], []))
+        for item in PLUGINS
+    ]
+
+
+@app.get("/queues/summary", response_model=QueueSummary)
+def queue_summary(db: Session = Depends(get_db)) -> QueueSummary:
+    projects = list(db.scalars(select(Project)).all())
+    briefs = list(db.scalars(select(FactoryBrief)).all())
+    failed = [item for item in projects if item.status in {"failed", "NEEDS_HUMAN_REVIEW"}]
+    running = [item for item in projects if item.status in {"queued", "running", "stop_requested"}]
+    return QueueSummary(
+        factory_brief_queue=sum(1 for item in briefs if item.status in {"queued", "researching", "scoring_candidates"}),
+        project_pipeline_queue=sum(1 for item in projects if item.status == "queued"),
+        running_jobs=len(running),
+        retryable_jobs=sum(1 for item in failed if item.status == "NEEDS_HUMAN_REVIEW"),
+        failed_jobs=len(failed),
+        dead_letter_jobs=sum(1 for item in projects if item.status == "failed"),
+        next_action="Review NEEDS_HUMAN_REVIEW projects or keep worker running.",
+    )
+
+
+@app.get("/learning/summary", response_model=LearningSummary)
+def learning_summary(db: Session = Depends(get_db)) -> LearningSummary:
+    evaluations = list(db.scalars(select(RunEvaluation).order_by(desc(RunEvaluation.created_at)).limit(500)).all())
+    failures = list(db.scalars(select(FailurePattern).order_by(desc(FailurePattern.count), desc(FailurePattern.updated_at)).limit(10)).all())
+    rules = list(db.scalars(select(LearningRule).where(LearningRule.enabled.is_(True)).order_by(desc(LearningRule.confidence_score)).limit(20)).all())
+    total = len(evaluations)
+    average = round(sum(item.quality_score for item in evaluations) / total, 1) if total else 0.0
+    provider_success: dict[str, dict[str, int]] = {}
+    archetype_values: dict[str, list[int]] = {}
+    for item in evaluations:
+        provider_bucket = provider_success.setdefault(item.provider, {"success": 0, "failure": 0})
+        provider_bucket["success" if item.final_status == "release_candidate" else "failure"] += 1
+        if item.archetype:
+            archetype_values.setdefault(item.archetype, []).append(item.quality_score)
+    return LearningSummary(
+        average_quality_score=average,
+        total_runs=total,
+        release_candidates=sum(1 for item in evaluations if item.final_status == "release_candidate"),
+        needs_human_review=sum(1 for item in evaluations if item.final_status == "NEEDS_HUMAN_REVIEW"),
+        common_failures=[FailurePatternRead.model_validate(item) for item in failures],
+        active_rules=[LearningRuleRead.model_validate(item) for item in rules],
+        provider_success=provider_success,
+        archetype_scores={key: round(sum(values) / len(values), 1) for key, values in archetype_values.items() if values},
+    )
+
+
+@app.post("/internal/learning/run-evaluations", response_model=RunEvaluationRead)
+def create_run_evaluation(payload: RunEvaluationCreate, db: Session = Depends(get_db)) -> RunEvaluation:
+    evaluation = RunEvaluation(**payload.model_dump())
+    db.add(evaluation)
+    db.flush()
+    record_learning_from_evaluation(db, evaluation)
+    db.commit()
+    db.refresh(evaluation)
+    return evaluation
 
 
 @app.get("/settings", response_model=AppSettingsSchema)
@@ -1119,6 +1338,80 @@ def list_project_policy(id: UUID, db: Session = Depends(get_db)) -> list[PolicyR
 def list_project_artifacts(id: UUID, db: Session = Depends(get_db)) -> list[Artifact]:
     get_or_404(db, Project, id)
     return list(db.scalars(select(Artifact).where(Artifact.project_id == id).order_by(desc(Artifact.created_at))).all())
+
+
+@app.post("/projects/{id}/internal-test-package", response_model=ArtifactRead)
+def create_internal_test_package(id: UUID, db: Session = Depends(get_db)) -> Artifact:
+    project = get_or_404(db, Project, id)
+    artifacts = list(db.scalars(select(Artifact).where(Artifact.project_id == id).order_by(desc(Artifact.created_at))).all())
+    workspace = Path(project.workspace_path or settings.local_artifact_root or "workspaces").resolve()
+    package_dir = workspace / "artifacts" / "internal_test_package"
+    package_dir.mkdir(parents=True, exist_ok=True)
+
+    apk = next((item for item in artifacts if item.kind == "build" or item.name.endswith(".apk")), None)
+    source = next((item for item in artifacts if item.kind == "source"), None)
+    quality = next((item for item in artifacts if item.name in {"product_score_report.vi.md", "quality_gate_report.md"}), None)
+    store = next((item for item in artifacts if item.name == "store_readiness_report.md"), None)
+    vi_report = next((item for item in artifacts if item.name == "factory_run_report.vi.md"), None)
+    blockers: list[str] = []
+
+    if apk and Path(apk.path).exists():
+        shutil.copy2(apk.path, package_dir / "app-debug.apk")
+    else:
+        blockers.append("Chưa có APK debug để test nội bộ.")
+
+    readme = [
+        "# Hướng dẫn tester nội bộ",
+        "",
+        f"App: {project.name}",
+        "",
+        "## Cách dùng",
+        "- Cài `app-debug.apk` trên thiết bị Android test.",
+        "- Đọc QA, quality, store readiness và privacy checklist trước khi gửi feedback.",
+        "- Không publish production từ gói này.",
+        "",
+        f"Source: {source.path if source else 'chưa có'}",
+        f"Vietnamese report: {vi_report.path if vi_report else 'chưa có'}",
+    ]
+    (package_dir / "README_FOR_TESTER.vi.md").write_text("\n".join(readme), encoding="utf-8")
+    (package_dir / "STORE_LISTING_DRAFT.vi.md").write_text(
+        f"# Store listing draft\n\nApp: {project.name}\n\nĐọc store_assets trong Artifact Center và viết lại bằng judgment của con người trước khi submit.",
+        encoding="utf-8",
+    )
+    (package_dir / "PRIVACY_REVIEW_CHECKLIST.vi.md").write_text(
+        "\n".join([
+            "# Privacy Review Checklist",
+            "",
+            "- Có policy draft chưa?",
+            "- Có API key hoặc secret hardcode không?",
+            "- Có analytics/ads production chưa được khai báo không?",
+            "- Billing thật đã được con người cấu hình và test chưa?",
+        ]),
+        encoding="utf-8",
+    )
+    (package_dir / "SCREENSHOT_PLAN.md").write_text(
+        "\n".join(["# Screenshot Plan", "1. Onboarding", "2. Home dashboard", "3. Core feature", "4. Progress/history", "5. Settings/privacy/paywall"]),
+        encoding="utf-8",
+    )
+    if quality:
+        blockers.append(f"Đọc quality report: {quality.path}")
+    if store:
+        blockers.append(f"Đọc store readiness: {store.path}")
+    blockers.append("Human approval required before production release.")
+    (package_dir / "RELEASE_BLOCKERS.md").write_text("\n".join(f"- {item}" for item in blockers), encoding="utf-8")
+
+    artifact = Artifact(
+        project_id=id,
+        kind="internal_test_package",
+        name="internal_test_package",
+        path=str(package_dir),
+        metadata_json={"apk": bool(apk), "source": source.path if source else None, "human_approval_required": True},
+    )
+    db.add(artifact)
+    create_notification(db, level="success", title="Internal test package created", message=f"Gói test nội bộ đã sẵn sàng cho {project.name}.", entity_type="project", entity_id=project.id)
+    db.commit()
+    db.refresh(artifact)
+    return artifact
 
 
 @app.post("/notifications", response_model=NotificationRead)

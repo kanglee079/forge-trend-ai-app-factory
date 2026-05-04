@@ -1,8 +1,17 @@
-import { clsx, type ClassValue } from "clsx";
 import type { DoctorResponse, Worker } from "@/lib/api";
 
+type ClassDictionary = Record<string, boolean | null | undefined>;
+type ClassValue = string | number | false | null | undefined | ClassDictionary | ClassValue[];
+
+function toClassName(value: ClassValue): string[] {
+  if (!value) return [];
+  if (typeof value === "string" || typeof value === "number") return [String(value)];
+  if (Array.isArray(value)) return value.flatMap(toClassName);
+  return Object.entries(value).flatMap(([key, enabled]) => enabled ? [key] : []);
+}
+
 export function cn(...inputs: ClassValue[]) {
-  return clsx(inputs);
+  return inputs.flatMap(toClassName).join(" ");
 }
 
 export function formatDate(value?: string | null) {

@@ -1,11 +1,5 @@
 import { spawn } from "node:child_process";
 
-const commands = [
-  ["api", ["dev:api"]],
-  ["dashboard", ["dev:dashboard"]],
-  ["worker", ["dev:worker"]],
-];
-
 const children = new Set();
 
 function commandName(command) {
@@ -45,9 +39,17 @@ function stopAll() {
   }
 }
 
-for (const [name, args] of commands) {
-  spawnScript(name, args);
+async function main() {
+  spawnScript("api", ["dev:api"]);
+  spawnScript("worker", ["dev:worker"]);
+  spawnScript("dashboard", ["serve:dashboard"]);
 }
+
+main().catch((error) => {
+  console.error(error);
+  stopAll();
+  process.exit(1);
+});
 
 process.on("SIGINT", () => {
   stopAll();

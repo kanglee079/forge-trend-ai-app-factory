@@ -12,6 +12,20 @@ ForgeTrend không tự động publish lên Google Play hoặc App Store.
 
 ## Cách chạy đơn giản
 
+Windows:
+
+```bat
+run.bat
+```
+
+macOS:
+
+```bash
+./run.command
+```
+
+Chế độ developer:
+
 ```bash
 pnpm reset:local
 pnpm dev
@@ -28,8 +42,13 @@ pnpm build
 pnpm smoke
 WORKER_ENABLE_CODEX=false pnpm e2e:factory
 WORKER_ENABLE_CODEX=false pnpm e2e:factory:vi
-pnpm e2e:ui
 pnpm e2e:generated-app-quality
+pnpm e2e:first-run
+pnpm e2e:one-click-sim
+pnpm e2e:autopilot
+pnpm e2e:learning
+pnpm e2e:internal-test-package
+pnpm e2e:ui
 ```
 
 Nếu Codex đã login:
@@ -52,3 +71,13 @@ RESEARCH_ENABLE_WEB=true RESEARCH_ALLOWED_URLS=https://www.producthunt.com pnpm 
 ## Xem kết quả
 
 Vào **Artifact Center** để mở/copy đường dẫn APK, source, PRD, quality report, store readiness report và store asset drafts.
+
+## Tài liệu tiếng Việt
+
+- `docs/ONE_CLICK_INSTALL_WINDOWS_VI.md`
+- `docs/ONE_CLICK_INSTALL_MACOS_VI.md`
+- `docs/INSTALLER_TROUBLESHOOTING_VI.md`
+- `docs/SIMPLE_MODE_USER_GUIDE_VI.md`
+- `docs/AUTOPILOT_ARCHITECTURE.md`
+- `docs/LEARNING_MEMORY.md`
+- `docs/INTERNAL_TEST_PACKAGE.md`

@@ -260,6 +260,49 @@ export type Artifact = {
   created_at: string;
 };
 
+export type ProviderStatus = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  available: boolean;
+  auth_status: string;
+  current_model: string | null;
+  last_success: string | null;
+  last_failure: string | null;
+  recommended_action: string;
+};
+
+export type QueueSummary = {
+  factory_brief_queue: number;
+  project_pipeline_queue: number;
+  running_jobs: number;
+  retryable_jobs: number;
+  failed_jobs: number;
+  dead_letter_jobs: number;
+  next_action: string;
+};
+
+export type PluginStatus = {
+  id: string;
+  name: string;
+  type: string;
+  enabled: boolean;
+  capabilities: string[];
+  config_schema: Record<string, unknown>;
+  missing_dependencies: string[];
+};
+
+export type LearningSummary = {
+  average_quality_score: number;
+  total_runs: number;
+  release_candidates: number;
+  needs_human_review: number;
+  common_failures: Array<{ taxonomy: string; count: number; last_reason: string | null; updated_at: string }>;
+  active_rules: Array<{ rule_key: string; description: string; confidence_score: number; enabled: boolean }>;
+  provider_success: Record<string, { success: number; failure: number }>;
+  archetype_scores: Record<string, number>;
+};
+
 export class ApiError extends Error {
   status: number;
   detail: string;
@@ -358,6 +401,11 @@ export const api = {
   qa: (id: string) => request<QAResult[]>(`/projects/${id}/qa`),
   policy: (id: string) => request<PolicyResult[]>(`/projects/${id}/policy`),
   artifacts: (id: string) => request<Artifact[]>(`/projects/${id}/artifacts`),
+  createInternalTestPackage: (id: string) => request<Artifact>(`/projects/${id}/internal-test-package`, { method: "POST" }),
+  providerStatus: () => request<ProviderStatus[]>("/providers/status"),
+  pluginRegistry: () => request<PluginStatus[]>("/plugins/registry"),
+  queueSummary: () => request<QueueSummary>("/queues/summary"),
+  learningSummary: () => request<LearningSummary>("/learning/summary"),
   notifications: (limit = 50) => request<Notification[]>(`/notifications?limit=${limit}`),
   markNotificationRead: (id: string) => request<Notification>(`/notifications/${id}/read`, { method: "POST" }),
   markAllNotificationsRead: () => request<ActionResponse>("/notifications/read-all", { method: "POST" })

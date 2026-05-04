@@ -1,28 +1,38 @@
 "use client";
 
-import { PlugZap } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Loader2, PlugZap, RefreshCw } from "lucide-react";
+import { api, ApiError, PluginStatus } from "@/lib/api";
 import { useLanguage } from "@/lib/i18n";
-import { Badge, Card, PageHeader, Table, Td, Th } from "@/components/ui";
-
-const plugins = [
-  { id: "deterministic_research", name: "Deterministic Research", type: "research_provider", enabled: true, capabilities: ["offline evidence", "fallback ideas"], missing: [] },
-  { id: "web_research", name: "Web Research", type: "research_provider", enabled: true, capabilities: ["allowlisted URLs", "evidence links"], missing: ["RESEARCH_ALLOWED_URLS when web mode is enabled"] },
-  { id: "education_archetype", name: "Education Archetype", type: "app_archetype", enabled: true, capabilities: ["lessons", "review cards", "progress"], missing: [] },
-  { id: "productivity_archetype", name: "Productivity Archetype", type: "app_archetype", enabled: true, capabilities: ["tasks", "priority", "history"], missing: [] },
-  { id: "codex_provider", name: "Codex CLI Provider", type: "code_provider", enabled: true, capabilities: ["coding pass", "repair loop"], missing: ["codex login when enabled"] },
-  { id: "quality_gate", name: "Product Quality Gate", type: "quality_gate", enabled: true, capabilities: ["banned copy", "journey", "ASO", "product score"], missing: [] },
-  { id: "store_assets", name: "Store Asset Generator", type: "store_asset_generator", enabled: true, capabilities: ["listing drafts", "keywords", "screenshot plan"], missing: [] },
-];
+import { Badge, Button, Card, Notice, PageHeader, Table, Td, Th } from "@/components/ui";
 
 export default function PluginsPage() {
   const { t } = useLanguage();
+  const [plugins, setPlugins] = useState<PluginStatus[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [notice, setNotice] = useState<{ tone: "danger"; message: string } | null>(null);
+
+  async function load() {
+    setLoading(true);
+    try {
+      setPlugins(await api.pluginRegistry());
+    } catch (error) {
+      setNotice({ tone: "danger", message: error instanceof ApiError ? error.detail : "Không tải được plugin registry." });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { load().catch(console.error); }, []);
+
   return (
     <>
-      <PageHeader title={t("pluginRegistryTitle")} description={t("pluginRegistryHelp")} />
+      <PageHeader title={t("pluginRegistryTitle")} description={t("pluginRegistryHelp")} action={<Button type="button" variant="secondary" onClick={() => load()} disabled={loading}>{loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw size={16} />}{t("refresh")}</Button>} />
+      {notice ? <Notice tone={notice.tone}>{notice.message}</Notice> : null}
       <Card className="mb-5">
         <div className="flex items-start gap-3">
           <PlugZap className="mt-0.5 h-5 w-5 text-primary" />
-          <p className="text-sm text-muted-foreground">Plugin registry hiện là registry khai báo trong code/docs. Bước sau có thể chuyển sang API-backed registry và UI configure từng plugin.</p>
+          <p className="text-sm text-muted-foreground">Registry đang được đọc từ API backend. Bước sau có thể thêm enable/disable và form cấu hình plugin.</p>
         </div>
       </Card>
       <Table>
@@ -35,7 +45,7 @@ export default function PluginsPage() {
               <Td><Badge>{plugin.type}</Badge></Td>
               <Td><Badge tone={plugin.enabled ? "success" : "warning"}>{plugin.enabled ? "on" : "off"}</Badge></Td>
               <Td><div className="flex flex-wrap gap-1">{plugin.capabilities.map((item) => <Badge key={item}>{item}</Badge>)}</div></Td>
-              <Td className="text-muted-foreground">{plugin.missing.length ? plugin.missing.join(", ") : "-"}</Td>
+              <Td className="text-muted-foreground">{plugin.missing_dependencies.length ? plugin.missing_dependencies.join(", ") : "-"}</Td>
             </tr>
           ))}
         </tbody>

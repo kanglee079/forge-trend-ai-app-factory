@@ -104,6 +104,21 @@ def build_quality_gate_result(
         issues.append("Core feature appears too static.")
         required_changes.append("Add an interactive product-specific flow with state changes and feedback.")
 
+    has_user_input_flow = _has_any(combined_lib, ["TextField", "TextFormField", "CheckboxListTile", "SwitchListTile", "Slider("])
+    if not has_user_input_flow:
+        issues.append("No user input or selection flow was found.")
+        required_changes.append("Add at least one create/add/select/toggle flow.")
+
+    has_local_state = _has_any(combined_lib, ["setState", "_completed", "history", "ActivityLog", "List<"])
+    if not has_local_state:
+        issues.append("No persisted or local sample state marker found.")
+        required_changes.append("Add local sample state so the app is not a static brochure.")
+
+    core_action_count = combined_lib.count("CheckboxListTile") + combined_lib.count("FilledButton") + combined_lib.count("OutlinedButton")
+    if core_action_count < 3:
+        issues.append(f"Only {core_action_count} core action marker(s) found.")
+        required_changes.append("Generated apps need at least three real actions.")
+
     has_apk = any(item.get("kind") == "build" or str(item.get("name", "")).endswith(".apk") for item in artifacts)
     if "android" in [str(item).lower() for item in project.get("target_platforms", [])] and not has_apk:
         issues.append("Android target is configured but APK artifact is missing.")
@@ -186,6 +201,9 @@ def build_quality_gate_result(
         "generic_template_risk": generic_template_risk,
         "target_language": target_language,
         "screen_count": screen_count,
+        "core_action_count": core_action_count,
+        "has_user_input_flow": has_user_input_flow,
+        "has_local_state": has_local_state,
         "issues": issues,
         "required_changes": required_changes,
     }
@@ -203,6 +221,9 @@ def quality_gate_report_markdown(result: dict[str, Any]) -> str:
             f"Passed: {result.get('passed')}",
             f"Generic template risk: {result.get('generic_template_risk')}",
             f"Feature screens: {result.get('screen_count')}",
+            f"Core action markers: {result.get('core_action_count')}",
+            f"User input flow: {result.get('has_user_input_flow')}",
+            f"Local state: {result.get('has_local_state')}",
             "",
             "## Score Breakdown",
             f"- Product specificity: {result.get('product_specificity_score')}",

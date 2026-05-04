@@ -1,9 +1,12 @@
 import json
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 
 from daemon.api import FactoryApi
+from daemon.autopilot import autopilot_decision, build_run_evaluation
+from daemon.autopilot.policies import MAX_POLICY_FIX_ITERATIONS, MAX_QUALITY_FIX_ITERATIONS
 from daemon.config import settings
 from daemon.cost_guard import check_cost_limit
 from daemon.provider_adapters import ADAPTERS, ProviderUnavailable, run_codex_cli
@@ -142,7 +145,7 @@ def get_selected_candidate(brief: dict[str, Any] | None, candidate_id: str) -> d
 def build_app_blueprint(ctx: PipelineContext, brief: dict[str, Any] | None, candidate: dict[str, Any] | None, *, is_vi: bool, has_paywall: bool) -> dict[str, Any]:
     archetype = choose_archetype((brief or {}).get("target_category"), (brief or {}).get("raw_prompt", ctx.project["name"]))
     features = compact_list(
-        (candidate or {}).get("core_features", []) or archetype.get("core_actions", []),
+        (candidate or {}).get("core_features", []) or archetype.get("core_actions", []) or archetype.get("actions", []),
         ["Onboarding", "Home dashboard", "Core feature flow", "Progress history", "Settings", "Privacy"],
     )
     return {
@@ -167,7 +170,7 @@ def build_app_blueprint(ctx: PipelineContext, brief: dict[str, Any] | None, cand
             "Privacy/about",
             *(["Paywall"] if has_paywall else []),
         ],
-        "core_entities": ["UserPreference", "ProgressItem", "ActivityLog", "StoreDraft"],
+        "core_entities": archetype.get("core_entities", []) or archetype.get("entities", []) or ["UserPreference", "ProgressItem", "ActivityLog", "StoreDraft"],
         "core_actions": features,
         "empty_states": ["No activity yet", "No saved items yet"],
         "error_states": ["Data load failed", "Build or configuration needs review"],
@@ -1417,23 +1420,19 @@ Review this policy with a human before store submission.
             provider_result = {"provider": "codex_cli", "skipped_reason": str(exc)}
             ctx.event(
                 "code_agent",
-                "Codex CLI unavailable; kept deterministic scaffold",
+                "Codex CLI unavailable; falling back to deterministic scaffold",
                 level="warning",
                 metadata_json={"provider": "codex_cli", "reason": str(exc), "iteration": iteration},
             )
-            if settings.worker_enable_codex:
-                raise
         except Exception as exc:
             provider_result = {"provider": "codex_cli", "error": str(exc)}
             ctx.event(
                 "code_agent",
-                "Codex CLI pass failed or timed out; continuing to QA with current workspace",
+                "Codex CLI pass failed or timed out; falling back to deterministic scaffold and continuing QA",
                 level="warning",
                 stderr=str(exc),
                 metadata_json={"provider": "codex_cli", "iteration": iteration},
             )
-            if settings.worker_enable_codex:
-                raise
     else:
         provider_result = {"provider": settings.worker_code_provider, "skipped_reason": "Provider is not implemented"}
         ctx.event(
@@ -1586,6 +1585,7 @@ def run_agent(ctx: PipelineContext, agent_name: str, fn, *, iteration: int = 0, 
 
 
 def run_pipeline(api: FactoryApi, project_id: str) -> None:
+    started_at = time.monotonic()
     project = api.get_project(project_id)
     ideas = api.list_ideas()
     idea = next((item for item in ideas if item["id"] == project.get("idea_id")), None)
@@ -1605,6 +1605,7 @@ def run_pipeline(api: FactoryApi, project_id: str) -> None:
     max_fix_iterations = int(runtime_settings.get("max_fix_iterations") or settings.worker_max_fix_iterations)
     api.set_project_status(project_id, "running", str(workspace))
     ctx.event("pipeline", "Pipeline started", metadata_json={"workspace": str(workspace)})
+    ctx.event("autopilot", "Autopilot started: planning full app factory run", metadata_json={"state": "planning", "project_id": project_id})
     for task in tasks:
         brief_id = task.get("input_json", {}).get("factory_brief_id")
         if brief_id:
@@ -1617,12 +1618,17 @@ def run_pipeline(api: FactoryApi, project_id: str) -> None:
             break
 
     try:
+        ctx.event("autopilot", "Đang lập PRD từ brief và candidate đã chọn.", metadata_json={"state": "planning"})
         run_checked_agent(ctx, "prd_agent", prd_agent)
+        ctx.event("autopilot", "Đang thiết kế luồng sản phẩm và trạng thái UX.", metadata_json={"state": "designing"})
         run_checked_agent(ctx, "ux_agent", ux_agent)
-        run_checked_agent(ctx, "code_agent", code_agent, iteration=0)
+        ctx.event("autopilot", "Đang tạo source Flutter và artifact blueprint/store assets.", metadata_json={"state": "coding"})
+        code_output = run_checked_agent(ctx, "code_agent", code_agent, iteration=0)
 
         qa_output: dict[str, Any] | None = None
+        fix_iterations = 0
         for iteration in range(max_fix_iterations + 1):
+            ctx.event("autopilot", f"Đang chạy QA lần {iteration + 1}.", metadata_json={"state": "testing", "iteration": iteration})
             qa_output = run_checked_agent(ctx, "qa_agent", qa_agent, iteration=iteration)
             if qa_output.get("passed"):
                 break
@@ -1630,11 +1636,67 @@ def run_pipeline(api: FactoryApi, project_id: str) -> None:
             if iteration >= max_fix_iterations:
                 break
             error_text = f"{failed['command']}\nSTDOUT:\n{failed['stdout'][-4000:]}\nSTDERR:\n{failed['stderr'][-4000:]}"
+            decision = autopilot_decision("fixing", error_text, iteration + 1, max_fix_iterations)
+            ctx.event("autopilot", "QA thất bại. Autopilot đang yêu cầu Code Agent sửa lỗi.", level="warning", metadata_json=decision)
             run_checked_agent(ctx, "code_agent", code_agent, iteration=iteration + 1, qa_error=error_text)
+            fix_iterations += 1
 
+        ctx.event("autopilot", "Đang chạy policy gate.", metadata_json={"state": "evaluating", "gate": "policy"})
         policy_output = run_checked_agent(ctx, "policy_agent", policy_agent)
+        if not policy_output.get("passed"):
+            for policy_iteration in range(MAX_POLICY_FIX_ITERATIONS):
+                reason = "; ".join(policy_output.get("issues") or ["Policy gate failed"])
+                decision = autopilot_decision("fixing", reason, policy_iteration + 1, MAX_POLICY_FIX_ITERATIONS)
+                ctx.event("autopilot", "Policy Gate phát hiện vấn đề. Autopilot thử sửa copy/naming/permission trong giới hạn an toàn.", level="warning", metadata_json=decision)
+                if decision["action"] != "retry_fix":
+                    break
+                run_checked_agent(ctx, "code_agent", code_agent, iteration=max_fix_iterations + policy_iteration + 1, qa_error=f"Policy gate failure:\n{reason}")
+                fix_iterations += 1
+                policy_output = run_checked_agent(ctx, "policy_agent", policy_agent)
+                if policy_output.get("passed"):
+                    break
+
+        ctx.event("autopilot", "Đang chạy product quality/store readiness gate.", metadata_json={"state": "evaluating", "gate": "quality"})
         quality_output = run_checked_agent(ctx, "quality_gate_agent", quality_gate_agent, qa_output=qa_output, policy_output=policy_output)
-        if qa_output and qa_output.get("passed") and policy_output.get("passed") and quality_output.get("passed"):
+        if not quality_output.get("passed"):
+            for quality_iteration in range(MAX_QUALITY_FIX_ITERATIONS):
+                reason = "; ".join(quality_output.get("issues") or ["Quality gate failed"])
+                decision = autopilot_decision("fixing", reason, quality_iteration + 1, MAX_QUALITY_FIX_ITERATIONS)
+                ctx.event("autopilot", "Quality Gate phát hiện app còn yếu. Autopilot thử làm sâu feature flow.", level="warning", metadata_json=decision)
+                if decision["action"] != "retry_fix":
+                    break
+                run_checked_agent(ctx, "code_agent", code_agent, iteration=max_fix_iterations + MAX_POLICY_FIX_ITERATIONS + quality_iteration + 1, qa_error=f"Quality gate failure:\n{reason}\nDeepen product-specific interaction and remove generic copy.")
+                fix_iterations += 1
+                qa_output = run_checked_agent(ctx, "qa_agent", qa_agent)
+                policy_output = run_checked_agent(ctx, "policy_agent", policy_agent)
+                quality_output = run_checked_agent(ctx, "quality_gate_agent", quality_gate_agent, qa_output=qa_output, policy_output=policy_output)
+                if quality_output.get("passed"):
+                    break
+
+        final_status = "release_candidate" if qa_output and qa_output.get("passed") and policy_output.get("passed") and quality_output.get("passed") else "NEEDS_HUMAN_REVIEW"
+        provider = str((code_output or {}).get("code_provider", {}).get("provider") or "deterministic")
+        archetype = None
+        blueprint_path = ctx.artifacts_dir / "app_blueprint.json"
+        if blueprint_path.exists():
+            try:
+                archetype = json.loads(blueprint_path.read_text(encoding="utf-8")).get("archetype")
+            except Exception:
+                archetype = None
+        evaluation_payload = build_run_evaluation(
+            brief=get_linked_brief(ctx),
+            project=ctx.project,
+            provider=provider,
+            archetype=archetype,
+            final_status=final_status,
+            qa_output=qa_output,
+            policy_output=policy_output,
+            quality_output=quality_output,
+            elapsed_seconds=int(time.monotonic() - started_at),
+            fix_iterations=fix_iterations,
+        )
+        ctx.event("autopilot", "Đang ghi learning memory cho lần chạy này.", metadata_json={"state": "learning", "evaluation": evaluation_payload})
+        ctx.api.run_evaluation(evaluation_payload)
+        if final_status == "release_candidate":
             api.set_project_status(project_id, "release_candidate", str(workspace))
             write_factory_run_report(ctx, qa_output, policy_output, "release_candidate", quality_output)
             ctx.event("pipeline", "Pipeline completed successfully")

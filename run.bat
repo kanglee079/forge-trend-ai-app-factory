@@ -1,5 +1,5 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-node scripts\run_desktop.mjs
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bootstrap_windows.ps1
 pause

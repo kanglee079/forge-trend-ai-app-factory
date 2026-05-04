@@ -177,6 +177,16 @@ export function ProjectDetailClient({ initialProject }: { initialProject: Projec
     }
   }
 
+  async function createInternalTestPackage() {
+    try {
+      const artifact = await api.createInternalTestPackage(project.id);
+      feedback.notify({ tone: "success", message: `Gói test nội bộ đã tạo: ${artifact.path}` });
+      await load();
+    } catch (error) {
+      feedback.notify({ tone: "danger", message: error instanceof ApiError ? error.detail : "Không thể tạo gói test nội bộ." });
+    }
+  }
+
   const prd = artifacts.find((item) => item.name === "prd.md");
   const hasReadyWorker = workers.some(isReadyWorker);
   const steps = derivePipelineSteps({ project, events, qa, policy, artifacts });
@@ -241,7 +251,7 @@ export function ProjectDetailClient({ initialProject }: { initialProject: Projec
       {active === "Logs" ? <LogViewer events={events} onClear={clearLogs} /> : null}
       {active === "QA" ? <QaPanel qa={qa} /> : null}
       {active === "Policy" ? <PolicyPanel policy={policy} /> : null}
-      {active === "Artifacts" ? <ArtifactsPanel artifacts={artifacts} /> : null}
+      {active === "Artifacts" ? <ArtifactsPanel artifacts={artifacts} onCreateInternalTestPackage={createInternalTestPackage} /> : null}
       {active === "Settings" ? <SettingsPanel project={project} /> : null}
     </>
   );
@@ -494,12 +504,23 @@ function PolicyPanel({ policy }: { policy: PolicyResult[] }) {
   );
 }
 
-function ArtifactsPanel({ artifacts }: { artifacts: Artifact[] }) {
+function ArtifactsPanel({ artifacts, onCreateInternalTestPackage }: { artifacts: Artifact[]; onCreateInternalTestPackage: () => void }) {
   return (
-    <Table>
-      <thead><tr><Th>Name</Th><Th>Kind</Th><Th>Path</Th><Th>Created</Th><Th>Action</Th></tr></thead>
-      <tbody>{artifacts.map((item) => <tr key={item.id}><Td>{item.name}</Td><Td>{item.kind}</Td><Td className="max-w-xl truncate">{item.path}</Td><Td>{formatDate(item.created_at)}</Td><Td><CopyButton value={item.path} label="Copy path" /></Td></tr>)}</tbody>
-    </Table>
+    <div className="space-y-4">
+      <Card>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-base font-semibold">Gói test nội bộ</h2>
+            <p className="text-sm text-muted-foreground">Gom APK, hướng dẫn tester, store listing draft, privacy checklist và blockers vào một folder local. Không upload store.</p>
+          </div>
+          <Button type="button" onClick={onCreateInternalTestPackage}>Tạo gói test nội bộ</Button>
+        </div>
+      </Card>
+      <Table>
+        <thead><tr><Th>Name</Th><Th>Kind</Th><Th>Path</Th><Th>Created</Th><Th>Action</Th></tr></thead>
+        <tbody>{artifacts.map((item) => <tr key={item.id}><Td>{item.name}</Td><Td>{item.kind}</Td><Td className="max-w-xl truncate">{item.path}</Td><Td>{formatDate(item.created_at)}</Td><Td><CopyButton value={item.path} label="Copy path" /></Td></tr>)}</tbody>
+      </Table>
+    </div>
   );
 }
 

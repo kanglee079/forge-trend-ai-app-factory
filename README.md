@@ -6,6 +6,19 @@ The default product path is now Simple Mode: open the dashboard, choose **Tạo 
 
 ForgeTrend is intentionally not a clone factory and does not auto-publish apps. The pipeline creates PRD, UX notes, app blueprint, Flutter source, QA/build results, policy checks, product quality reports, store asset drafts, and human-review gates that block copycat, thin, generic, or secret-leaking apps.
 
+One-click launchers:
+
+- Windows: `run.bat`
+- macOS: `run.command`
+
+V3 docs:
+
+- [Windows one-click install](docs/ONE_CLICK_INSTALL_WINDOWS_VI.md)
+- [macOS one-click install](docs/ONE_CLICK_INSTALL_MACOS_VI.md)
+- [Autopilot architecture](docs/AUTOPILOT_ARCHITECTURE.md)
+- [Learning memory](docs/LEARNING_MEMORY.md)
+- [Internal test package](docs/INTERNAL_TEST_PACKAGE.md)
+
 ## What runs
 
 - Desktop shell: open `run.command` on macOS or `run.bat` on Windows

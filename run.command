@@ -2,4 +2,4 @@
 set -euo pipefail
 
 cd "$(dirname "$0")"
-node scripts/run_desktop.mjs
+bash scripts/bootstrap_macos.sh

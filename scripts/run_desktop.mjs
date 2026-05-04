@@ -89,6 +89,20 @@ async function isReady(url) {
   }
 }
 
+async function isDashboardHealthy(url) {
+  try {
+    const response = await fetch(url);
+    const html = await response.text();
+    const match = html.match(/href="([^"]*?_next\/static\/[^"]+\.css[^"]*)"/i);
+    if (!match) return false;
+    const asset = new URL(match[1], url).toString();
+    const assetResponse = await fetch(asset);
+    return assetResponse.ok;
+  } catch {
+    return false;
+  }
+}
+
 async function ensureDependencies() {
   await run("pnpm", ["install", "--frozen-lockfile=false"]);
   await run("pnpm", ["setup:python"]);
@@ -115,8 +129,8 @@ async function main() {
   if (!(await isReady("http://localhost:8000/health"))) {
     spawnLogged("api", "pnpm", ["dev:api"]);
   }
-  if (!(await isReady("http://localhost:3000"))) {
-    spawnLogged("dashboard", "pnpm", ["dev:dashboard"]);
+  if (!(await isDashboardHealthy("http://localhost:3000"))) {
+    spawnLogged("dashboard", "pnpm", ["serve:dashboard"]);
   }
   spawnLogged("worker", "pnpm", ["dev:worker"], { PYTHONUNBUFFERED: "1" });
 

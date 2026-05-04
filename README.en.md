@@ -6,6 +6,20 @@ ForgeTrend does not auto-publish to Google Play or the App Store.
 
 ## Quick Start
 
+Windows:
+
+```bat
+run.bat
+```
+
+macOS:
+
+```bash
+./run.command
+```
+
+Developer mode:
+
 ```bash
 pnpm reset:local
 pnpm dev
@@ -22,8 +36,13 @@ pnpm build
 pnpm smoke
 WORKER_ENABLE_CODEX=false pnpm e2e:factory
 WORKER_ENABLE_CODEX=false pnpm e2e:factory:vi
-pnpm e2e:ui
 pnpm e2e:generated-app-quality
+pnpm e2e:first-run
+pnpm e2e:one-click-sim
+pnpm e2e:autopilot
+pnpm e2e:learning
+pnpm e2e:internal-test-package
+pnpm e2e:ui
 ```
 
 Codex mode:

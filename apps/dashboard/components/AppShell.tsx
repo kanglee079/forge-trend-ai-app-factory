@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { Activity, Bot, Boxes, CheckCircle2, FileArchive, FileText, KeyRound, LayoutDashboard, Lightbulb, Moon, PackageCheck, Plug, PlusCircle, Route, Server, Settings, Stethoscope, Smartphone, Sun } from "lucide-react";
+import { Activity, Bot, Boxes, Brain, CheckCircle2, FileArchive, FileQuestion, FileText, KeyRound, LayoutDashboard, Lightbulb, ListTree, Moon, PackageCheck, Plug, PlusCircle, Route, Server, Settings, Stethoscope, Smartphone, Sun } from "lucide-react";
 import { api } from "@/lib/api";
 import { useLanguage } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -12,22 +12,27 @@ import { NotificationCenter } from "@/components/NotificationCenter";
 import { Badge, Button } from "@/components/ui";
 
 const navItems = [
-  { href: "/", labelKey: "overview", icon: LayoutDashboard },
-  { href: "/create", labelKey: "createApp", icon: PlusCircle },
-  { href: "/factory", labelKey: "factory", icon: Bot },
-  { href: "/doctor", labelKey: "doctor", icon: Stethoscope },
-  { href: "/api-keys", labelKey: "apiKeys", icon: KeyRound },
-  { href: "/workers", labelKey: "workers", icon: Server },
-  { href: "/ideas", labelKey: "ideas", icon: Lightbulb },
-  { href: "/projects", labelKey: "projects", icon: Smartphone },
-  { href: "/candidates", labelKey: "candidates", icon: PackageCheck },
-  { href: "/artifacts", labelKey: "artifacts", icon: FileArchive },
-  { href: "/providers", labelKey: "providers", icon: Route },
-  { href: "/plugins", labelKey: "plugins", icon: Plug },
-  { href: "/setup", labelKey: "setup", icon: Boxes },
-  { href: "/logs", labelKey: "logs", icon: FileText },
-  { href: "/settings", labelKey: "settings", icon: Settings }
+  { href: "/", labelKey: "overview", icon: LayoutDashboard, mode: "simple" },
+  { href: "/create", labelKey: "createApp", icon: PlusCircle, mode: "simple" },
+  { href: "/candidates", labelKey: "candidates", icon: PackageCheck, mode: "simple" },
+  { href: "/artifacts", labelKey: "artifacts", icon: FileArchive, mode: "simple" },
+  { href: "/settings", labelKey: "settings", icon: Settings, mode: "simple" },
+  { href: "/help", labelKey: "help", icon: FileQuestion, mode: "simple" },
+  { href: "/factory", labelKey: "factory", icon: Bot, mode: "advanced" },
+  { href: "/doctor", labelKey: "doctor", icon: Stethoscope, mode: "advanced" },
+  { href: "/api-keys", labelKey: "apiKeys", icon: KeyRound, mode: "advanced" },
+  { href: "/workers", labelKey: "workers", icon: Server, mode: "advanced" },
+  { href: "/queues", labelKey: "queues", icon: ListTree, mode: "advanced" },
+  { href: "/ideas", labelKey: "ideas", icon: Lightbulb, mode: "advanced" },
+  { href: "/projects", labelKey: "projects", icon: Smartphone, mode: "advanced" },
+  { href: "/providers", labelKey: "providers", icon: Route, mode: "advanced" },
+  { href: "/plugins", labelKey: "plugins", icon: Plug, mode: "advanced" },
+  { href: "/learning", labelKey: "learning", icon: Brain, mode: "advanced" },
+  { href: "/setup", labelKey: "setup", icon: Boxes, mode: "advanced" },
+  { href: "/logs", labelKey: "logs", icon: FileText, mode: "advanced" }
 ] as const;
+
+const uiModeStorageKey = "forge-ui-mode";
 
 type HealthState = {
   apiOnline: boolean;
@@ -41,12 +46,29 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { t } = useLanguage();
   const [theme, setTheme] = useState<"light" | "dark">(() => getInitialTheme());
+  const [advancedMode, setAdvancedMode] = useState(false);
   const [health, setHealth] = useState<HealthState>({ apiOnline: false, workerCount: null, apiKeyCount: null, ideaCount: null, projectCount: null });
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     window.localStorage.setItem("forge-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    setAdvancedMode(window.localStorage.getItem(uiModeStorageKey) === "advanced");
+    const onStorage = () => setAdvancedMode(window.localStorage.getItem(uiModeStorageKey) === "advanced");
+    window.addEventListener("forge-ui-mode-change", onStorage);
+    return () => window.removeEventListener("forge-ui-mode-change", onStorage);
+  }, []);
+
+  function toggleMode() {
+    setAdvancedMode((current) => {
+      const next = !current;
+      window.localStorage.setItem(uiModeStorageKey, next ? "advanced" : "simple");
+      window.dispatchEvent(new Event("forge-ui-mode-change"));
+      return next;
+    });
+  }
 
   useEffect(() => {
     let active = true;
@@ -92,14 +114,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
     return navItems.find((item) => item.href !== "/" && pathname.startsWith(item.href));
   }, [pathname]);
+  const visibleNavItems = useMemo(() => {
+    const visible = navItems.filter((item) => advancedMode || item.mode === "simple");
+    return activeItem && !visible.includes(activeItem) ? [...visible, activeItem] : visible;
+  }, [activeItem, advancedMode]);
 
   return (
     <FeedbackProvider>
       <div className="min-h-screen">
         <aside className="fixed inset-y-0 left-0 hidden w-64 border-r border-border bg-card px-4 py-5 lg:block">
           <Brand />
+          <button
+            type="button"
+            onClick={toggleMode}
+            className="mb-4 w-full rounded-md border border-border bg-background px-3 py-2 text-left text-xs text-muted-foreground transition hover:bg-muted"
+          >
+            <span className="block font-medium text-foreground">{advancedMode ? t("advancedMode") : t("simpleMode")}</span>
+            <span>{advancedMode ? t("advancedModeHelp") : t("simpleModeHelp")}</span>
+          </button>
           <nav className="space-y-1" aria-label="Primary navigation">
-            {navItems.map((item) => (
+            {visibleNavItems.map((item) => (
               <NavItem key={item.href} item={item} active={activeItem?.href === item.href} />
             ))}
           </nav>
@@ -130,10 +164,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 >
                   {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
                 </Button>
+                <Button type="button" variant="secondary" onClick={toggleMode}>
+                  {advancedMode ? t("advancedMode") : t("simpleMode")}
+                </Button>
               </div>
             </div>
             <nav className="flex gap-1 overflow-x-auto px-4 pb-3 sm:px-6 lg:hidden" aria-label="Mobile navigation">
-              {navItems.map((item) => (
+              {visibleNavItems.map((item) => (
                 <NavPill key={item.href} item={item} active={activeItem?.href === item.href} />
               ))}
             </nav>

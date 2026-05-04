@@ -528,6 +528,112 @@ class ArtifactRead(ApiModel):
     created_at: datetime
 
 
+class RunEvaluationCreate(BaseModel):
+    brief_id: UUID | None = None
+    project_id: UUID | None = None
+    category: str | None = None
+    language: str | None = None
+    monetization: str | None = None
+    provider: str = "deterministic"
+    archetype: str | None = None
+    final_status: str
+    qa_passed: bool = False
+    quality_score: int = Field(default=0, ge=0, le=100)
+    policy_passed: bool = False
+    store_readiness_score: int = Field(default=0, ge=0, le=100)
+    time_to_complete_seconds: int = 0
+    fix_iterations: int = 0
+    failure_reason: str | None = None
+    human_review_reason: str | None = None
+    metrics_json: dict = Field(default_factory=dict)
+
+
+class RunEvaluationRead(ApiModel):
+    id: UUID
+    brief_id: UUID | None
+    project_id: UUID | None
+    category: str | None
+    language: str | None
+    monetization: str | None
+    provider: str
+    archetype: str | None
+    final_status: str
+    qa_passed: bool
+    quality_score: int
+    policy_passed: bool
+    store_readiness_score: int
+    time_to_complete_seconds: int
+    fix_iterations: int
+    failure_reason: str | None
+    human_review_reason: str | None
+    metrics_json: dict
+    created_at: datetime
+
+
+class FailurePatternRead(ApiModel):
+    id: UUID
+    taxonomy: str
+    count: int
+    last_project_id: UUID | None
+    last_reason: str | None
+    updated_at: datetime
+
+
+class LearningRuleRead(ApiModel):
+    id: UUID
+    rule_key: str
+    description: str
+    enabled: bool
+    confidence_score: int
+    trigger_json: dict
+    action_json: dict
+    created_at: datetime
+    updated_at: datetime
+
+
+class LearningSummary(BaseModel):
+    average_quality_score: float
+    total_runs: int
+    release_candidates: int
+    needs_human_review: int
+    common_failures: list[FailurePatternRead]
+    active_rules: list[LearningRuleRead]
+    provider_success: dict[str, dict[str, int]]
+    archetype_scores: dict[str, float]
+
+
+class ProviderStatus(BaseModel):
+    id: str
+    name: str
+    enabled: bool
+    available: bool
+    auth_status: str
+    current_model: str | None = None
+    last_success: datetime | None = None
+    last_failure: datetime | None = None
+    recommended_action: str
+
+
+class PluginStatus(BaseModel):
+    id: str
+    name: str
+    type: str
+    enabled: bool
+    capabilities: list[str] = Field(default_factory=list)
+    config_schema: dict = Field(default_factory=dict)
+    missing_dependencies: list[str] = Field(default_factory=list)
+
+
+class QueueSummary(BaseModel):
+    factory_brief_queue: int
+    project_pipeline_queue: int
+    running_jobs: int
+    retryable_jobs: int
+    failed_jobs: int
+    dead_letter_jobs: int
+    next_action: str
+
+
 class BuildCreate(BaseModel):
     status: str
     platform: str = "android"
