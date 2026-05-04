@@ -19,6 +19,8 @@
     "e2e:factory:codex": "cross-env WORKER_ENABLE_CODEX=true node scripts/e2e_factory_codex_run.mjs",
     "e2e:research-web": "cross-env RESEARCH_ENABLE_WEB=true node scripts/e2e_research_web.mjs",
     "e2e:ui": "playwright test",
+    "e2e:generated-app-quality": "node scripts/e2e_generated_app_quality.mjs",
+    "e2e:first-run": "node scripts/e2e_first_run.mjs",
     "doctor:ports": "node scripts/doctor_ports.mjs",
     "reset:local": "node scripts/reset_local.mjs",
     "db:migrate": "node scripts/venv-run.mjs services/api -m alembic upgrade head",

@@ -200,7 +200,7 @@ class AppSettings(Base):
     default_platforms: Mapped[list[str]] = mapped_column(JSONB, default=lambda: ["android"])
     default_backend: Mapped[str] = mapped_column(String(80), default="none")
     default_monetization: Mapped[str] = mapped_column(String(80), default="none")
-    default_language: Mapped[str] = mapped_column(String(80), default="en")
+    default_language: Mapped[str] = mapped_column(String(80), default="vi")
     default_target_country: Mapped[str] = mapped_column(String(80), default="US")
     policy_strictness: Mapped[str] = mapped_column(String(80), default="standard")
     feature_flags: Mapped[dict] = mapped_column(JSONB, default=dict)

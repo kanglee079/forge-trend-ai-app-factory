@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { Activity, Bot, CheckCircle2, FileText, KeyRound, LayoutDashboard, Lightbulb, Moon, Server, Settings, Stethoscope, Smartphone, Sun } from "lucide-react";
+import { Activity, Bot, Boxes, CheckCircle2, FileArchive, FileText, KeyRound, LayoutDashboard, Lightbulb, Moon, PackageCheck, Plug, PlusCircle, Route, Server, Settings, Stethoscope, Smartphone, Sun } from "lucide-react";
 import { api } from "@/lib/api";
 import { useLanguage } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -13,12 +13,18 @@ import { Badge, Button } from "@/components/ui";
 
 const navItems = [
   { href: "/", labelKey: "overview", icon: LayoutDashboard },
+  { href: "/create", labelKey: "createApp", icon: PlusCircle },
   { href: "/factory", labelKey: "factory", icon: Bot },
   { href: "/doctor", labelKey: "doctor", icon: Stethoscope },
   { href: "/api-keys", labelKey: "apiKeys", icon: KeyRound },
   { href: "/workers", labelKey: "workers", icon: Server },
   { href: "/ideas", labelKey: "ideas", icon: Lightbulb },
   { href: "/projects", labelKey: "projects", icon: Smartphone },
+  { href: "/candidates", labelKey: "candidates", icon: PackageCheck },
+  { href: "/artifacts", labelKey: "artifacts", icon: FileArchive },
+  { href: "/providers", labelKey: "providers", icon: Route },
+  { href: "/plugins", labelKey: "plugins", icon: Plug },
+  { href: "/setup", labelKey: "setup", icon: Boxes },
   { href: "/logs", labelKey: "logs", icon: FileText },
   { href: "/settings", labelKey: "settings", icon: Settings }
 ] as const;
@@ -160,10 +166,10 @@ function SetupGuide({ apiOnline, workerCount, apiKeyCount, ideaCount, projectCou
   const { t } = useLanguage();
   const items = [
     { label: "API", complete: apiOnline },
-    { label: "Worker", complete: Boolean(workerCount) },
-    { label: "Key", complete: Boolean(apiKeyCount) },
-    { label: "Idea", complete: Boolean(ideaCount) },
-    { label: "Project", complete: Boolean(projectCount) }
+    { label: t("workerShort"), complete: Boolean(workerCount) },
+    { label: t("apiKeys"), complete: Boolean(apiKeyCount) },
+    { label: t("ideas"), complete: Boolean(ideaCount) },
+    { label: t("projects"), complete: Boolean(projectCount) }
   ];
 
   return (

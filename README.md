@@ -1,6 +1,10 @@
 # ForgeTrend AI App Factory
 
-ForgeTrend is a local-first MVP control plane for generating original Flutter app skeletons from human-entered ideas. It is intentionally not a clone factory: the pipeline creates a PRD, UX notes, a fresh Flutter scaffold, QA/build results, and policy checks that block copycat, thin, or secret-leaking apps.
+ForgeTrend is a local-first, Vietnamese-first AI App Factory for generating original Flutter app candidates from human-entered ideas. Start with [README.vi.md](README.vi.md) for the normal user flow, or [README.en.md](README.en.md) for the English guide.
+
+The default product path is now Simple Mode: open the dashboard, choose **Tạo app từ ý tưởng của tôi**, review progress, then open APK/source/report artifacts. Advanced concepts like worker, Codex, deterministic mode, ports, queue, Docker, and diagnostics remain available in Advanced Mode.
+
+ForgeTrend is intentionally not a clone factory and does not auto-publish apps. The pipeline creates PRD, UX notes, app blueprint, Flutter source, QA/build results, policy checks, product quality reports, store asset drafts, and human-review gates that block copycat, thin, generic, or secret-leaking apps.
 
 ## What runs
 

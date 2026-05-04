@@ -70,7 +70,7 @@ class AppSettings(ApiModel):
     default_platforms: list[str] = Field(default_factory=lambda: ["android"])
     default_backend: str = "none"
     default_monetization: str = "none"
-    default_language: str = "en"
+    default_language: str = "vi"
     default_target_country: str = "US"
     policy_strictness: str = "standard"
     feature_flags: dict[str, bool] = Field(default_factory=lambda: {

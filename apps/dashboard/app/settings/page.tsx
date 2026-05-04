@@ -6,9 +6,11 @@ import { api, ApiError, AppSettings } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
 import { useFeedback } from "@/components/feedback";
 import { Badge, Button, Card, Input, Label, Notice, PageHeader, Select, Skeleton } from "@/components/ui";
+import { useLanguage } from "@/lib/i18n";
 
 export default function SettingsPage() {
   const feedback = useFeedback();
+  const { language, setLanguage, t } = useLanguage();
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -51,6 +53,7 @@ export default function SettingsPage() {
         theme: form.get("theme"),
         daily_budget_usd: daily,
         monthly_budget_usd: monthly,
+        default_language: form.get("default_language"),
         feature_flags: {
           trend_radar: form.get("trend_radar") === "on",
           provider_key_network_test: form.get("provider_key_network_test") === "on",
@@ -59,6 +62,8 @@ export default function SettingsPage() {
         },
       });
       setSettings(updated);
+      const nextLanguage = form.get("default_language");
+      if (nextLanguage === "vi" || nextLanguage === "en") setLanguage(nextLanguage);
       feedback.notify({ tone: "success", message: "Settings saved." });
       setNotice({ tone: "success", message: "Settings saved. Worker max fix iterations apply to new pipeline runs." });
     } catch (error) {
@@ -72,7 +77,7 @@ export default function SettingsPage() {
     <>
       <PageHeader
         title="Settings"
-        description="Persistent factory preferences for provider, model, retries, paths, refresh, notifications, budgets, and feature flags."
+        description={t("settingsHelpVi")}
         action={
           <Button type="button" variant="secondary" onClick={() => load()} disabled={loading}>
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw size={16} />}
@@ -118,6 +123,13 @@ export default function SettingsPage() {
           <Card>
             <h2 className="mb-4 text-base font-semibold">Dashboard Preferences</h2>
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <div>
+                <Label>{t("languageSetting")}</Label>
+                <Select name="default_language" defaultValue={settings.default_language || language}>
+                  <option value="vi">{t("languageVietnamese")}</option>
+                  <option value="en">{t("languageEnglish")}</option>
+                </Select>
+              </div>
               <div>
                 <Label>Auto refresh seconds</Label>
                 <Input name="auto_refresh_seconds" type="number" min="2" max="60" defaultValue={settings.auto_refresh_seconds} />

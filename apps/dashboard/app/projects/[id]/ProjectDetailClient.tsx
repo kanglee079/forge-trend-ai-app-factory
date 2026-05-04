@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Loader2, Play, RefreshCw, RotateCcw, Square } from "lucide-react";
 import { AgentEvent, ApiError, api, Artifact, FactoryBriefDetail, PolicyResult, Project, ProjectTask, QAResult, Worker } from "@/lib/api";
@@ -264,8 +265,35 @@ function Overview({
   latestFailure: ReturnType<typeof getLatestFailure>;
 }) {
   const latestPolicy = policy[0];
+  const apk = artifacts.find((item) => item.kind === "build" || item.name.endsWith(".apk"));
+  const source = artifacts.find((item) => item.kind === "source");
+  const quality = artifacts.find((item) => item.name === "product_score_report.json" || item.name === "quality_gate_report.json");
+  const viReport = artifacts.find((item) => item.name.endsWith(".vi.md"));
+  const needsHumanReview = project.status === "NEEDS_HUMAN_REVIEW";
   return (
     <div className="space-y-4">
+      <Card>
+        <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-base font-semibold">Kết quả tạo app</h2>
+            <p className="text-sm text-muted-foreground">Tóm tắt đầu ra để người dùng không phải đào trong log thô.</p>
+          </div>
+          <StatusBadge status={project.status} />
+        </div>
+        <div className="grid gap-2 md:grid-cols-3">
+          <SummaryCheck label="App name" value={project.name} />
+          <SummaryCheck label="APK generated?" value={apk ? "yes" : "no"} tone={apk ? "success" : "warning"} />
+          <SummaryCheck label="Quality score" value={String(quality?.metadata_json?.score ?? "-")} tone={Number(quality?.metadata_json?.score ?? 0) >= 75 ? "success" : "warning"} />
+          <SummaryCheck label="Store readiness" value={artifacts.some((item) => item.name.includes("store_readiness")) ? "report ready" : "pending"} />
+          <SummaryCheck label="Vietnamese support" value={viReport ? "yes" : "pending"} tone={viReport ? "success" : "warning"} />
+          <SummaryCheck label="Needs human review?" value={needsHumanReview ? "yes" : "still required before release"} tone={needsHumanReview ? "warning" : "neutral"} />
+        </div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          {source ? <CopyButton value={source.path} label="Copy source path" /> : null}
+          {apk ? <CopyButton value={apk.path} label="Copy APK path" /> : null}
+          <Link className="inline-flex min-h-10 items-center rounded-md border border-border bg-card px-4 py-2 text-sm font-medium hover:bg-muted" href="/artifacts">Open artifacts</Link>
+        </div>
+      </Card>
       <PipelineStepper
         steps={steps}
         latestFailure={latestFailure}
@@ -282,6 +310,15 @@ function Overview({
         </Card>
       </div>
       <ReleaseReadinessPanel project={project} qa={qa} policy={policy} artifacts={artifacts} />
+    </div>
+  );
+}
+
+function SummaryCheck({ label, value, tone = "neutral" }: { label: string; value: string; tone?: "success" | "warning" | "danger" | "neutral" }) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-background px-3 py-2 text-sm">
+      <span className="text-muted-foreground">{label}</span>
+      <Badge tone={tone}>{value}</Badge>
     </div>
   );
 }

@@ -10,6 +10,7 @@ from daemon.provider_adapters import ADAPTERS, ProviderUnavailable, run_codex_cl
 from daemon.quality_gate import build_quality_gate_result, quality_gate_report_markdown, store_readiness_report_markdown
 from daemon.research.providers import build_research_bundle
 from daemon.safety import run_safe
+from daemon.app_archetypes import choose_archetype
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -135,6 +136,144 @@ def get_selected_candidate(brief: dict[str, Any] | None, candidate_id: str) -> d
     return next((item for item in candidates if item.get("id") == candidate_id), None) or next(
         (item for item in candidates if item.get("status") == "selected"),
         None,
+    )
+
+
+def build_app_blueprint(ctx: PipelineContext, brief: dict[str, Any] | None, candidate: dict[str, Any] | None, *, is_vi: bool, has_paywall: bool) -> dict[str, Any]:
+    archetype = choose_archetype((brief or {}).get("target_category"), (brief or {}).get("raw_prompt", ctx.project["name"]))
+    features = compact_list(
+        (candidate or {}).get("core_features", []) or archetype.get("core_actions", []),
+        ["Onboarding", "Home dashboard", "Core feature flow", "Progress history", "Settings", "Privacy"],
+    )
+    return {
+        "app_name": ctx.project["name"],
+        "target_user": (candidate or {}).get("target_user") or ("Người dùng Việt cần một app tập trung" if is_vi else "People who need one focused mobile workflow"),
+        "primary_job_to_be_done": (candidate or {}).get("problem") or (brief or {}).get("raw_prompt") or ctx.project["name"],
+        "main_user_journey": [
+            "Start",
+            "Input or select one focused item",
+            "Review the suggested plan",
+            "Complete action and see progress",
+            "Return to history/settings",
+        ],
+        "archetype": archetype["id"],
+        "screens": [
+            "Onboarding",
+            "Home dashboard",
+            *archetype.get("screens", []),
+            "Core feature flow",
+            "Progress/history",
+            "Settings",
+            "Privacy/about",
+            *(["Paywall"] if has_paywall else []),
+        ],
+        "core_entities": ["UserPreference", "ProgressItem", "ActivityLog", "StoreDraft"],
+        "core_actions": features,
+        "empty_states": ["No activity yet", "No saved items yet"],
+        "error_states": ["Data load failed", "Build or configuration needs review"],
+        "success_states": ["Progress updated", "Plan refreshed"],
+        "monetization": {
+            "mode": (brief or {}).get("monetization_mode", "none"),
+            "simulated_only": True,
+            "human_billing_review_required": True,
+        },
+        "privacy": {
+            "local_first": True,
+            "no_production_analytics": True,
+            "no_auto_publish": True,
+        },
+        "store_positioning": {
+            "title": ctx.project["name"],
+            "short_description_vi": "App tập trung giúp người dùng hoàn thành một mục tiêu rõ ràng mỗi ngày.",
+            "differentiation_claim": (candidate or {}).get("unique_angle") or "Focused local-first workflow with human-reviewed release gates.",
+        },
+        "localization": {
+            "default_language": "vi" if is_vi else "en",
+            "supported_languages": ["vi", "en"],
+        },
+    }
+
+
+def write_blueprint_artifacts(ctx: PipelineContext, blueprint: dict[str, Any]) -> None:
+    json_path = ctx.artifacts_dir / "app_blueprint.json"
+    md_path = ctx.artifacts_dir / "app_blueprint.md"
+    write_text(json_path, json.dumps(blueprint, indent=2, ensure_ascii=False))
+    lines = [
+        f"# App Blueprint: {blueprint['app_name']}",
+        "",
+        f"- Target user: {blueprint['target_user']}",
+        f"- JTBD: {blueprint['primary_job_to_be_done']}",
+        f"- Default language: {blueprint['localization']['default_language']}",
+        "",
+        "## Main User Journey",
+        *[f"- {item}" for item in blueprint["main_user_journey"]],
+        "",
+        "## Screens",
+        *[f"- {item}" for item in blueprint["screens"]],
+        "",
+        "## Core Actions",
+        *[f"- {item}" for item in blueprint["core_actions"]],
+    ]
+    write_text(md_path, "\n".join(lines))
+    ctx.api.artifact(ctx.project_id, "document", "app_blueprint.json", str(json_path), blueprint)
+    ctx.api.artifact(ctx.project_id, "document", "app_blueprint.md", str(md_path), {"screens": blueprint["screens"], "core_actions": blueprint["core_actions"]})
+
+
+def write_store_asset_drafts(ctx: PipelineContext, blueprint: dict[str, Any]) -> None:
+    store_dir = ctx.artifacts_dir / "store_assets"
+    app_name = blueprint["app_name"]
+    target_user = blueprint["target_user"]
+    differentiation = blueprint["store_positioning"]["differentiation_claim"]
+    assets = {
+        "app_name.md": f"# {app_name}\n\nHuman review required before store use.\n",
+        "short_description.vi.md": f"{app_name} giúp {target_user} hoàn thành một mục tiêu rõ ràng mỗi ngày.",
+        "long_description.vi.md": f"# {app_name}\n\nỨng viên app này tập trung vào hành trình: bắt đầu, chọn việc cần làm, xử lý, xem tiến độ và quay lại lịch sử/cài đặt.\n\nĐiểm khác biệt: {differentiation}\n\nChưa được tự động publish. Cần con người review policy, billing, screenshot và listing.",
+        "short_description.en.md": f"{app_name} helps its target users complete one focused workflow with clear progress.",
+        "long_description.en.md": f"# {app_name}\n\nThis app candidate focuses on a simple journey: start, select an item, review/process, see progress, and return to history/settings.\n\nDifferentiation: {differentiation}\n\nHuman review is required before store submission.",
+        "screenshot_plan.md": "\n".join([
+            "# Screenshot Plan",
+            "",
+            "1. Onboarding value prop",
+            "2. Home dashboard",
+            "3. Core feature flow",
+            "4. Progress/history",
+            "5. Premium/settings/privacy",
+        ]),
+        "keywords.md": f"# Keywords\n\n{app_name.lower()}, productivity, mobile workflow, vietnamese app, local-first, progress tracker\n",
+        "privacy_summary.md": "# Privacy Summary\n\nLocal-first MVP candidate. No production analytics, no bundled secrets, no auto-publish. Human privacy review required.\n",
+    }
+    for name, content in assets.items():
+        path = store_dir / name
+        write_text(path, content)
+        ctx.api.artifact(ctx.project_id, "store_asset", name, str(path), {"app_name": app_name})
+
+
+def product_score_report_markdown(result: dict[str, Any]) -> str:
+    return "\n".join(
+        [
+            "# Product Score Report",
+            "",
+            f"Overall: {result.get('score')}/100",
+            "",
+            "## Dimensions",
+            f"- Product specificity: {result.get('product_specificity_score')}",
+            f"- User journey clarity: {result.get('user_journey_clarity_score')}",
+            f"- Feature depth: {result.get('feature_depth_score')}",
+            f"- UX completeness: {result.get('ux_completeness_score')}",
+            f"- Vietnamese localization: {result.get('localization_score')}",
+            f"- Monetization clarity: {result.get('monetization_clarity_score')}",
+            f"- Store readiness: {result.get('store_readiness_score')}",
+            f"- Policy safety: {result.get('policy_safety_score')}",
+            f"- Technical quality: {result.get('technical_quality_score')}",
+            "",
+            "## Human Review Gate",
+            "- App có khác biệt thật không?",
+            "- UI có đủ dùng không?",
+            "- Có copy thương hiệu không?",
+            "- Có chính sách quyền riêng tư chưa?",
+            "- Có billing thật chưa?",
+            "- Có thể đẩy test nội bộ chưa?",
+        ]
     )
 
 
@@ -689,6 +828,10 @@ def code_agent(ctx: PipelineContext, iteration: int = 0, qa_error: str | None = 
             "iap" in about.lower(),
         ]
     )
+    blueprint = build_app_blueprint(ctx, brief, candidate, is_vi=is_vi, has_paywall=has_paywall)
+    write_blueprint_artifacts(ctx, blueprint)
+    write_store_asset_drafts(ctx, blueprint)
+    core_features = compact_list(blueprint.get("core_actions", []), core_features)
     dart_features = ",\n".join(f"    '{dart_string(feature)}'" for feature in core_features)
     title_literal = dart_string(app_name)
     about_literal = dart_string(idea_summary)[:900]
@@ -1400,12 +1543,18 @@ def quality_gate_agent(ctx: PipelineContext, qa_output: dict[str, Any] | None = 
     quality_json_path = ctx.artifacts_dir / "quality_gate_report.json"
     quality_md_path = ctx.artifacts_dir / "quality_gate_report.md"
     store_md_path = ctx.artifacts_dir / "store_readiness_report.md"
+    product_score_json_path = ctx.artifacts_dir / "product_score_report.json"
+    product_score_md_path = ctx.artifacts_dir / "product_score_report.vi.md"
     write_text(quality_json_path, json.dumps(result, indent=2, ensure_ascii=False))
     write_text(quality_md_path, quality_gate_report_markdown(result))
     write_text(store_md_path, store_readiness_report_markdown(project=ctx.project, result=result, policy_output=policy_output))
+    write_text(product_score_json_path, json.dumps(result, indent=2, ensure_ascii=False))
+    write_text(product_score_md_path, product_score_report_markdown(result))
     ctx.api.artifact(ctx.project_id, "document", "quality_gate_report.json", str(quality_json_path), result)
     ctx.api.artifact(ctx.project_id, "document", "quality_gate_report.md", str(quality_md_path), {"score": result["score"], "passed": result["passed"]})
     ctx.api.artifact(ctx.project_id, "document", "store_readiness_report.md", str(store_md_path), {"score": result["score"], "passed": result["passed"]})
+    ctx.api.artifact(ctx.project_id, "document", "product_score_report.json", str(product_score_json_path), result)
+    ctx.api.artifact(ctx.project_id, "document", "product_score_report.vi.md", str(product_score_md_path), {"score": result["score"], "passed": result["passed"]})
     ctx.event(
         "quality_gate",
         "Product quality gate completed",
