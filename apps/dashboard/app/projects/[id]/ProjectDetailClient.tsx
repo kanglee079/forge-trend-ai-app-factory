@@ -309,6 +309,7 @@ function Overview({
         latestFailure={latestFailure}
         onCopyFailure={latestFailure?.detail ? () => navigator.clipboard.writeText(latestFailure.detail) : undefined}
       />
+      <LiveProgressExplanation steps={steps} latestFailure={latestFailure} />
       <div className="grid gap-4 md:grid-cols-4">
         <Card><div className="text-sm text-muted-foreground">Status</div><div className="mt-2"><StatusBadge status={project.status} /></div></Card>
         <Card><div className="text-sm text-muted-foreground">Events</div><div className="mt-2 text-2xl font-semibold">{events.length}</div></Card>
@@ -322,6 +323,86 @@ function Overview({
       <ReleaseReadinessPanel project={project} qa={qa} policy={policy} artifacts={artifacts} />
     </div>
   );
+}
+
+function LiveProgressExplanation({
+  steps,
+  latestFailure,
+}: {
+  steps: ReturnType<typeof derivePipelineSteps>;
+  latestFailure: ReturnType<typeof getLatestFailure>;
+}) {
+  const current = getCurrentStep(steps);
+  const copy = currentStepCopy(current?.id ?? "waiting", Boolean(latestFailure));
+  return (
+    <Card>
+      <div className="grid gap-4 lg:grid-cols-3">
+        <div>
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Bước hiện tại</div>
+          <div className="mt-1 font-semibold">{current?.label ?? "Đang chờ worker"}</div>
+        </div>
+        <div>
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">ForgeTrend đang làm gì?</div>
+          <p className="mt-1 text-sm text-muted-foreground">{copy.doing}</p>
+        </div>
+        <div>
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Nếu lỗi thì sao?</div>
+          <p className="mt-1 text-sm text-muted-foreground">{copy.failure}</p>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function currentStepCopy(stepId: string, hasFailure: boolean) {
+  if (hasFailure) {
+    return {
+      doing: "Hệ thống đã thấy lỗi gần nhất và giữ lại log để bạn copy hoặc để Autopilot dùng trong vòng sửa tiếp theo.",
+      failure: "Nếu còn trong giới hạn retry, Code Agent sẽ sửa. Nếu vượt giới hạn hoặc rủi ro policy cao, dự án chuyển sang NEEDS_HUMAN_REVIEW.",
+    };
+  }
+  const copy: Record<string, { doing: string; failure: string }> = {
+    brief: {
+      doing: "Đang đọc brief, config snapshot, run profile và skill được chọn.",
+      failure: "Nếu thiếu cấu hình quan trọng, hệ thống ghi event rõ ràng để bạn sửa ở Config Studio.",
+    },
+    research: {
+      doing: "Đang tạo finding/candidate từ deterministic provider hoặc web allowlist.",
+      failure: "Nếu web không sẵn sàng, ForgeTrend fallback deterministic thay vì dừng toàn bộ luồng.",
+    },
+    prd: {
+      doing: "Đang biến candidate thành PRD và phạm vi MVP cụ thể.",
+      failure: "Nếu PRD quá generic, learning rule sẽ ưu tiên blueprint sâu hơn ở lần sau.",
+    },
+    ux: {
+      doing: "Đang tạo screen flow, trạng thái trống/lỗi/thành công và hướng thiết kế.",
+      failure: "Nếu thiếu flow, quality gate sẽ yêu cầu làm sâu core feature.",
+    },
+    code: {
+      doing: "Đang tạo source Flutter, blueprint, store assets và có thể gọi Codex nếu đã cấu hình.",
+      failure: "Nếu Codex lỗi hoặc chưa auth, worker giữ scaffold deterministic và tiếp tục QA khi có thể.",
+    },
+    qa: {
+      doing: "Đang chạy Flutter pub get, analyze, test và debug APK.",
+      failure: "Lỗi QA sẽ được đưa lại cho Code Agent để sửa trong số vòng retry cho phép.",
+    },
+    policy: {
+      doing: "Đang kiểm tra tên app, permission, privacy, billing disclosure và rủi ro copycat.",
+      failure: "Lỗi policy nghiêm trọng sẽ chặn release candidate và yêu cầu con người review.",
+    },
+    quality: {
+      doing: "Đang chấm độ cụ thể của sản phẩm, localization, feature depth và store readiness.",
+      failure: "Nếu app còn yếu hoặc generic, Autopilot thử làm sâu luồng chính trước khi chặn.",
+    },
+    artifacts: {
+      doing: "Đang ghi APK/source/report/store assets/gói test nội bộ để bạn review.",
+      failure: "Nếu thiếu artifact quan trọng, dự án chưa được xem là release candidate.",
+    },
+  };
+  return copy[stepId] ?? {
+    doing: "Đang chờ bước tiếp theo từ worker hoặc queue.",
+    failure: "Nếu không có tiến triển, kiểm tra worker, doctor và log pipeline.",
+  };
 }
 
 function SummaryCheck({ label, value, tone = "neutral" }: { label: string; value: string; tone?: "success" | "warning" | "danger" | "neutral" }) {

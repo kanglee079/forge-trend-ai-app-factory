@@ -1,0 +1,11 @@
+name = "Vietnamese UX Writer"
+slug = "vietnamese_ux_writer"
+category = "localization"
+version = "1.0.0"
+description = "Write natural Vietnamese UX copy for app candidates."
+token_budget = 1600
+
+[prompts.rewrite_microcopy_vi]
+purpose = "Rewrite app microcopy for Vietnamese users"
+when_to_use = "When target_language is vi or target_country is VN"
+token_budget = 700

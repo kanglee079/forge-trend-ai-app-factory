@@ -1,0 +1,11 @@
+name = "Prompt Compression"
+slug = "prompt_compression"
+category = "token_optimization"
+version = "1.0.0"
+description = "Create compact context packs before agent calls."
+token_budget = 900
+
+[prompts.compress_context]
+purpose = "Summarize long context"
+when_to_use = "Before code/review calls or after large logs"
+token_budget = 450

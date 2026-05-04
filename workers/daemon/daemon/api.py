@@ -43,6 +43,23 @@ class FactoryApi:
     def app_settings(self) -> dict[str, Any]:
         return self._request("GET", "/settings")
 
+    def default_runtime_config(self) -> dict[str, Any]:
+        return self._request("GET", "/config-profiles/default/runtime")
+
+    def runtime_config(self, config_profile_id: str | None = None) -> dict[str, Any]:
+        if config_profile_id:
+            return self._request("GET", f"/config-profiles/{config_profile_id}/runtime")
+        return self.default_runtime_config()
+
+    def record_skill_run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/internal/skill-runs", json=payload)
+
+    def context_pack(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/internal/context-packs", json=payload)
+
+    def provider_completion(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/internal/provider-completion", json=payload)
+
     def get_factory_brief(self, brief_id: str) -> dict[str, Any]:
         return self._request("GET", f"/factory-briefs/{brief_id}")
 

@@ -1,10 +1,14 @@
+import json
 import os
+import re
 import shutil
 import socket
 import subprocess
+import tomllib
 import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import quote_plus
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -22,6 +26,9 @@ from app.models import (
     ApiKey,
     Artifact,
     Build,
+    ConfigPlugin,
+    ConfigProfile,
+    ContextPack,
     CostUsage,
     FactoryBrief,
     FactoryState,
@@ -31,12 +38,23 @@ from app.models import (
     Notification,
     OpportunityCandidate,
     PolicyResult,
+    PromptFragment,
+    ProviderProfile,
     Project,
     ProjectTask,
     QAResult,
     ResearchFinding,
+    RunProfile,
     RunEvaluation,
+    SkillPack,
+    SkillPrompt,
+    SkillScore,
+    SkillRun,
+    SourceItem,
+    SourceRegistry,
+    SourceScanRun,
     TrendSource,
+    TrustedProject,
     Worker,
 )
 from app.queue import enqueue_factory_brief, enqueue_pipeline
@@ -57,6 +75,16 @@ from app.schemas import (
     ArtifactCreate,
     ArtifactRead,
     BuildCreate,
+    ConfigPluginCreate,
+    ConfigPluginPatch,
+    ConfigPluginRead,
+    ConfigProfileCreate,
+    ConfigProfileExportResponse,
+    ConfigProfileImportPayload,
+    ConfigProfilePatch,
+    ConfigProfileRead,
+    ContextPackCreate,
+    ContextPackRead,
     DoctorCheck,
     DoctorResponse,
     FactoryBriefEventCreate,
@@ -73,6 +101,7 @@ from app.schemas import (
     IdeaCreate,
     IdeaRead,
     LearningRuleRead,
+    LearningRulePatch,
     LearningSummary,
     NotificationCreate,
     NotificationRead,
@@ -89,17 +118,38 @@ from app.schemas import (
     ProjectTaskPatch,
     ProjectTaskRead,
     PluginStatus,
+    PromptContextSummary,
+    ProviderCompletionRequest,
+    ProviderCompletionResponse,
+    ProviderProfileCreate,
+    ProviderProfilePatch,
+    ProviderProfileRead,
     ProviderStatus,
     QueueSummary,
     QAResultCreate,
     QAResultRead,
     ResearchFindingCreate,
     ResearchFindingRead,
+    RunProfileRead,
     RunEvaluationCreate,
     RunEvaluationRead,
+    RuntimeConfigResponse,
+    ScanRunDetail,
+    SkillPackPatch,
+    SkillPackRead,
+    SkillPromptRead,
+    SkillTestPayload,
+    SkillTestResponse,
+    SourceItemPatch,
+    SourceItemRead,
+    SourceScanCreate,
+    SourceScanRunRead,
     WorkerHeartbeat,
     WorkerRead,
     WorkerRegister,
+    TrustedProjectCreate,
+    TrustedProjectPatch,
+    TrustedProjectRead,
 )
 from app.security import decrypt_secret, encrypt_secret, key_hint, redact, secret_fingerprint
 
@@ -579,6 +629,762 @@ def build_brief_detail(db: Session, brief: FactoryBrief) -> FactoryBriefDetail:
     )
 
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+BUILTIN_CONFIG_PLUGINS = [
+    {"plugin_id": "documents", "name": "Documents", "category": "workspace", "source": "openai-primary-runtime", "version": "builtin"},
+    {"plugin_id": "spreadsheets", "name": "Spreadsheets", "category": "workspace", "source": "openai-primary-runtime", "version": "builtin"},
+    {"plugin_id": "presentations", "name": "Presentations", "category": "workspace", "source": "openai-primary-runtime", "version": "builtin"},
+    {"plugin_id": "browser-use", "name": "Browser Use", "category": "automation", "source": "openai-bundled", "version": "builtin"},
+    {"plugin_id": "computer-use", "name": "Computer Use", "category": "automation", "source": "openai-bundled", "version": "builtin"},
+    {"plugin_id": "deterministic_research", "name": "Deterministic Research", "category": "research", "source": "local", "version": "builtin"},
+    {"plugin_id": "web_research", "name": "Web Research", "category": "research", "source": "allowlist", "version": "builtin"},
+]
+
+BUILTIN_SKILLS = [
+    {
+        "name": "Flutter Store Ready",
+        "slug": "flutter_store_ready",
+        "category": "app_generation",
+        "description": "Tao luong Flutter co onboarding, home, core flow, settings, privacy, QA va store-readiness.",
+        "token_budget": 3000,
+        "prompts": [
+            {
+                "name": "build_core_flow",
+                "purpose": "Generate app-specific core feature flow before Flutter code generation.",
+                "when_to_use": "Before code_agent writes Flutter screens.",
+                "prompt_template": "Build a store-ready Flutter MVP for {{app_name}}. Require onboarding, home dashboard, app-specific core flow, settings, privacy, empty/error/success states, tests, and no production publishing automation.",
+                "success_criteria_json": {"must_have": ["core_flow", "qa", "privacy", "store_readiness"]},
+                "token_budget": 1200,
+            }
+        ],
+    },
+    {
+        "name": "Vietnamese UX Writer",
+        "slug": "vietnamese_ux_writer",
+        "category": "localization",
+        "description": "Viet microcopy tieng Viet ro rang, tu nhien, tranh dich may moc.",
+        "token_budget": 1600,
+        "prompts": [
+            {
+                "name": "rewrite_microcopy_vi",
+                "purpose": "Rewrite product copy for Vietnamese-first apps.",
+                "when_to_use": "When target_language is vi or target_country is VN.",
+                "prompt_template": "Rewrite UI copy for Vietnamese users. Keep it concise, natural, respectful, and action-oriented. Avoid generic template wording. App context: {{app_context}}",
+                "success_criteria_json": {"must_have": ["natural_vietnamese", "domain_specific_copy"]},
+                "token_budget": 700,
+            }
+        ],
+    },
+    {
+        "name": "Google Play Policy",
+        "slug": "google_play_policy",
+        "category": "policy",
+        "description": "Checklist rui ro ten app, privacy, permission, billing va spam policy truoc khi tao goi test.",
+        "token_budget": 2200,
+        "prompts": [
+            {
+                "name": "policy_gate",
+                "purpose": "Identify release blockers before internal testing.",
+                "when_to_use": "Before release candidate or when policy risk is high.",
+                "prompt_template": "Review the app candidate for Google Play policy risk: copycat naming, misleading claims, privacy, permissions, billing disclosure, user generated content, and minimum functionality. Output blockers and safe fixes.",
+                "success_criteria_json": {"must_have": ["release_blockers", "safe_fixes"]},
+                "token_budget": 900,
+            }
+        ],
+    },
+    {
+        "name": "App Store Readiness",
+        "slug": "app_store_readiness",
+        "category": "store_readiness",
+        "description": "Danh gia tinh san sang cua app candidate truoc khi con nguoi review.",
+        "token_budget": 1800,
+        "prompts": [
+            {
+                "name": "readiness_check",
+                "purpose": "Check whether app output is reviewable by a human tester.",
+                "when_to_use": "After QA and quality gate.",
+                "prompt_template": "Check APK/source/report/store asset readiness. Require clear blockers, tester README, privacy draft, screenshot plan, and no auto-publish.",
+                "success_criteria_json": {"must_have": ["tester_readme", "blocker_list", "store_assets"]},
+                "token_budget": 700,
+            }
+        ],
+    },
+    {
+        "name": "ASO Listing",
+        "slug": "aso_listing",
+        "category": "store_assets",
+        "description": "Tao draft store listing khong spam, khong copy brand, co keyword an toan.",
+        "token_budget": 1400,
+        "prompts": [
+            {
+                "name": "listing_draft",
+                "purpose": "Draft store listing copy for human review.",
+                "when_to_use": "When store assets are created.",
+                "prompt_template": "Draft app name, short description, long description, keywords, and screenshot captions. Keep claims modest and require human approval.",
+                "success_criteria_json": {"must_have": ["modest_claims", "human_review"]},
+                "token_budget": 650,
+            }
+        ],
+    },
+    {
+        "name": "IAP Subscription Placeholder",
+        "slug": "iap_subscription_placeholder",
+        "category": "monetization",
+        "description": "Tao paywall mo phong va disclosure ro rang, khong bat billing that.",
+        "token_budget": 1300,
+        "prompts": [
+            {
+                "name": "billing_placeholder",
+                "purpose": "Generate safe subscription/IAP placeholder flow.",
+                "when_to_use": "When monetization is iap, subscription, freemium, or hybrid.",
+                "prompt_template": "Design a simulated paywall with clear billing disclosure. Do not enable real purchases. Require human billing configuration before release.",
+                "success_criteria_json": {"must_have": ["simulated_only", "billing_disclosure"]},
+                "token_budget": 500,
+            }
+        ],
+    },
+    {
+        "name": "QA Flutter Fix",
+        "slug": "qa_flutter_fix",
+        "category": "qa",
+        "description": "Sua loi flutter pub get/analyze/test/build theo loi that.",
+        "token_budget": 2200,
+        "prompts": [
+            {
+                "name": "fix_flutter_failure",
+                "purpose": "Repair Flutter QA failures.",
+                "when_to_use": "When qa_agent returns a failed command.",
+                "prompt_template": "Fix this Flutter failure without destructive commands. Keep app behavior intact. Error: {{qa_error}}",
+                "success_criteria_json": {"must_have": ["analyze_passes", "tests_pass", "debug_apk"]},
+                "token_budget": 1000,
+            }
+        ],
+    },
+    {
+        "name": "Trend Research",
+        "slug": "trend_research",
+        "category": "research",
+        "description": "Chon huong app dua tren pain, demand, feasibility, originality va policy risk.",
+        "token_budget": 2400,
+        "prompts": [
+            {
+                "name": "score_opportunity",
+                "purpose": "Score candidate app opportunities.",
+                "when_to_use": "During auto_trend and candidate scoring.",
+                "prompt_template": "Score app opportunities by demand, pain, monetization, build feasibility, differentiation, originality, and policy risk. Prefer useful niche apps over clones.",
+                "success_criteria_json": {"must_have": ["scores", "original_angle"]},
+                "token_budget": 850,
+            }
+        ],
+    },
+    {
+        "name": "Prompt Compression",
+        "slug": "prompt_compression",
+        "category": "token_optimization",
+        "description": "Nen context thanh pack ngan gon truoc khi goi agent.",
+        "token_budget": 900,
+        "prompts": [
+            {
+                "name": "compress_context",
+                "purpose": "Summarize long context into reusable context packs.",
+                "when_to_use": "Before code/review calls or after large logs.",
+                "prompt_template": "Compress context into decisions, constraints, important files, blockers, and open questions. Keep enough detail for the next agent.",
+                "success_criteria_json": {"must_have": ["constraints", "important_files", "blockers"]},
+                "token_budget": 450,
+            }
+        ],
+    },
+    {
+        "name": "Code Review",
+        "slug": "code_review",
+        "category": "qa",
+        "description": "Review bug/regression/security risk sau khi code pass.",
+        "token_budget": 1800,
+        "prompts": [
+            {
+                "name": "review_patch",
+                "purpose": "Review generated source for defects.",
+                "when_to_use": "After code changes and before quality gate.",
+                "prompt_template": "Review generated app changes for bugs, missing tests, policy leakage, hardcoded secrets, and incomplete flows. Return findings first.",
+                "success_criteria_json": {"must_have": ["findings_first", "tests"]},
+                "token_budget": 700,
+            }
+        ],
+    },
+    {
+        "name": "Privacy Policy",
+        "slug": "privacy_policy",
+        "category": "policy",
+        "description": "Tao privacy draft an toan cho MVP local-first.",
+        "token_budget": 1100,
+        "prompts": [
+            {
+                "name": "privacy_draft",
+                "purpose": "Draft privacy policy and summary.",
+                "when_to_use": "When generating store assets or policy gate.",
+                "prompt_template": "Draft a privacy policy placeholder for a local-first MVP. Mention no production analytics/secrets and require human legal review.",
+                "success_criteria_json": {"must_have": ["local_first", "human_review"]},
+                "token_budget": 500,
+            }
+        ],
+    },
+]
+
+RUN_PROFILE_PRESETS = [
+    {
+        "name": "Nhanh & tiet kiem",
+        "slug": "fast_cheap",
+        "description": "Dung deterministic/local truoc, it iteration, phu hop smoke run.",
+        "skill_slugs": ["trend_research", "flutter_store_ready", "qa_flutter_fix", "prompt_compression"],
+        "token_budget": 8000,
+        "quality_threshold": 70,
+        "max_iterations": 2,
+        "research_mode": "deterministic",
+    },
+    {
+        "name": "Chat luong cao",
+        "slug": "high_quality",
+        "description": "Tang nguong chat luong va bat nhieu skill policy/store-readiness.",
+        "skill_slugs": ["trend_research", "flutter_store_ready", "vietnamese_ux_writer", "google_play_policy", "app_store_readiness", "code_review"],
+        "token_budget": 30000,
+        "quality_threshold": 85,
+        "max_iterations": 5,
+        "research_mode": "hybrid",
+    },
+    {
+        "name": "Codex that",
+        "slug": "codex_full_power",
+        "description": "Uu tien Codex CLI khi worker da login, van giu fallback deterministic.",
+        "skill_slugs": ["flutter_store_ready", "qa_flutter_fix", "code_review", "prompt_compression"],
+        "token_budget": 40000,
+        "quality_threshold": 80,
+        "max_iterations": 6,
+        "research_mode": "deterministic",
+    },
+    {
+        "name": "Research web",
+        "slug": "research_web",
+        "description": "Uu tien web evidence khi allowlist duoc cau hinh.",
+        "skill_slugs": ["trend_research", "google_play_policy", "aso_listing"],
+        "token_budget": 22000,
+        "quality_threshold": 78,
+        "max_iterations": 4,
+        "research_mode": "web",
+    },
+    {
+        "name": "Offline deterministic",
+        "slug": "offline_deterministic",
+        "description": "Chay duoc khi khong co API key/Codex/web.",
+        "skill_slugs": ["flutter_store_ready", "qa_flutter_fix", "privacy_policy"],
+        "token_budget": 0,
+        "quality_threshold": 72,
+        "max_iterations": 3,
+        "research_mode": "deterministic",
+    },
+    {
+        "name": "App tieng Viet de test store",
+        "slug": "vi_store_test",
+        "description": "Mac dinh tieng Viet, tap trung copy, policy, store asset va goi test noi bo.",
+        "skill_slugs": ["vietnamese_ux_writer", "flutter_store_ready", "google_play_policy", "aso_listing", "privacy_policy"],
+        "token_budget": 18000,
+        "quality_threshold": 80,
+        "max_iterations": 4,
+        "research_mode": "deterministic",
+    },
+]
+
+PROMPT_FRAGMENT_PRESETS = [
+    ("flutter_architecture_rules", "app_generation", "Keep Flutter app compact, testable, local-first, and free of secrets or auto-publish automation."),
+    ("vietnamese_ux_rules", "localization", "Vietnamese UI copy must be natural, specific to the app domain, concise, and not machine-translated."),
+    ("policy_rules", "policy", "Check trademark, privacy, permissions, billing disclosure, misleading claims, and minimum functionality."),
+    ("iap_rules", "monetization", "Billing must stay simulated until human configuration of StoreKit or Google Play Billing."),
+    ("qa_fix_rules", "qa", "Fix the actual Flutter command failure and rerun analyze, tests, and debug APK."),
+    ("store_listing_rules", "store_assets", "Draft store assets only for human review; never auto-submit or make unsupported claims."),
+]
+
+
+def seed_default_config_profile(db: Session) -> ConfigProfile:
+    profile = db.scalar(select(ConfigProfile).where(ConfigProfile.is_default.is_(True)).order_by(desc(ConfigProfile.updated_at)))
+    if profile:
+        return profile
+    profile = db.scalar(select(ConfigProfile).order_by(desc(ConfigProfile.updated_at)))
+    if profile:
+        profile.is_default = True
+        db.commit()
+        db.refresh(profile)
+        return profile
+
+    profile = ConfigProfile(
+        name="Codex Full Power Mode",
+        description="Profile mac dinh: OpenAI-compatible router, Codex/browser/document skills, deterministic fallback an toan.",
+        is_default=True,
+        model_provider="OpenAI",
+        model="gpt-5.5",
+        review_model="gpt-5.5",
+        network_access="enabled",
+        model_context_window=1000000,
+        model_auto_compact_token_limit=900000,
+    )
+    db.add(profile)
+    db.flush()
+    provider = ProviderProfile(
+        config_profile_id=profile.id,
+        name="OpenAI",
+        provider_type="openai_compatible",
+        base_url="https://api.openai.com/v1",
+        wire_api="responses",
+        requires_openai_auth=True,
+        enabled=True,
+    )
+    db.add(provider)
+    db.flush()
+    profile.active_provider_profile_id = provider.id
+    for plugin in BUILTIN_CONFIG_PLUGINS:
+        db.add(ConfigPlugin(config_profile_id=profile.id, **plugin, enabled=True))
+    db.commit()
+    db.refresh(profile)
+    return profile
+
+
+def set_config_profile_default(db: Session, profile: ConfigProfile) -> None:
+    db.query(ConfigProfile).update({ConfigProfile.is_default: False}, synchronize_session=False)
+    profile.is_default = True
+
+
+def profile_providers(db: Session, profile_id: UUID) -> list[ProviderProfile]:
+    return list(db.scalars(select(ProviderProfile).where(ProviderProfile.config_profile_id == profile_id).order_by(desc(ProviderProfile.enabled), ProviderProfile.name)).all())
+
+
+def profile_plugins(db: Session, profile_id: UUID) -> list[ConfigPlugin]:
+    return list(db.scalars(select(ConfigPlugin).where(ConfigPlugin.config_profile_id == profile_id).order_by(ConfigPlugin.category, ConfigPlugin.name)).all())
+
+
+def profile_trusted_projects(db: Session, profile_id: UUID) -> list[TrustedProject]:
+    return list(db.scalars(select(TrustedProject).where(TrustedProject.config_profile_id == profile_id).order_by(TrustedProject.path)).all())
+
+
+def config_profile_read(db: Session, profile: ConfigProfile) -> ConfigProfileRead:
+    return ConfigProfileRead.model_validate(profile).model_copy(
+        update={
+            "providers": [ProviderProfileRead.model_validate(item) for item in profile_providers(db, profile.id)],
+            "plugins": [ConfigPluginRead.model_validate(item) for item in profile_plugins(db, profile.id)],
+            "trusted_projects": [TrustedProjectRead.model_validate(item) for item in profile_trusted_projects(db, profile.id)],
+        }
+    )
+
+
+def active_provider_for_profile(db: Session, profile: ConfigProfile) -> ProviderProfile | None:
+    providers = profile_providers(db, profile.id)
+    if profile.active_provider_profile_id:
+        active = next((item for item in providers if item.id == profile.active_provider_profile_id), None)
+        if active:
+            return active
+    return next((item for item in providers if item.enabled), None) or (providers[0] if providers else None)
+
+
+def build_runtime_config(db: Session, profile: ConfigProfile | None = None) -> RuntimeConfigResponse:
+    profile = profile or seed_default_config_profile(db)
+    provider = active_provider_for_profile(db, profile)
+    provider_payload: dict = {}
+    if provider:
+        api_key_hint_value = None
+        if provider.api_key_id:
+            api_key = db.get(ApiKey, provider.api_key_id)
+            api_key_hint_value = api_key.key_hint if api_key else None
+        provider_payload = {
+            "id": str(provider.id),
+            "name": provider.name,
+            "provider_type": provider.provider_type,
+            "base_url": provider.base_url,
+            "wire_api": provider.wire_api,
+            "requires_openai_auth": provider.requires_openai_auth,
+            "api_key_id": str(provider.api_key_id) if provider.api_key_id else None,
+            "api_key_hint": api_key_hint_value,
+            "auth_mode": "dashboard_api_key" if provider.api_key_id else ("codex_cli_auth" if provider.provider_type == "codex_cli" else "not_configured"),
+            "enabled": provider.enabled,
+        }
+    enabled_plugins = [
+        {
+            "plugin_id": item.plugin_id,
+            "name": item.name,
+            "category": item.category,
+            "source_type": item.source_type,
+            "version": item.version,
+        }
+        for item in profile_plugins(db, profile.id)
+        if item.enabled
+    ]
+    enabled_skills = [
+        {"slug": item.slug, "name": item.name, "category": item.category, "token_budget": item.token_budget, "quality_score": item.quality_score}
+        for item in db.scalars(select(SkillPack).where(SkillPack.enabled.is_(True)).order_by(desc(SkillPack.quality_score), SkillPack.name)).all()
+    ]
+    trusted_projects = [{"path": item.path, "trust_level": item.trust_level} for item in profile_trusted_projects(db, profile.id)]
+    return RuntimeConfigResponse(
+        config_profile_id=profile.id,
+        profile_name=profile.name,
+        model_provider=profile.model_provider,
+        model=profile.model,
+        review_model=profile.review_model,
+        model_reasoning_effort=profile.model_reasoning_effort,
+        disable_response_storage=profile.disable_response_storage,
+        network_access=profile.network_access,
+        model_context_window=profile.model_context_window,
+        model_auto_compact_token_limit=profile.model_auto_compact_token_limit,
+        provider=provider_payload,
+        enabled_plugins=enabled_plugins,
+        enabled_skills=enabled_skills,
+        trusted_projects=trusted_projects,
+        secrets_redacted=True,
+    )
+
+
+def runtime_config_snapshot(db: Session, profile: ConfigProfile | None = None) -> dict:
+    return build_runtime_config(db, profile).model_dump(mode="json")
+
+
+def toml_value(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if value is None:
+        return '""'
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def toml_table_key(value: str) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def export_profile_toml(db: Session, profile: ConfigProfile) -> str:
+    lines = [
+        f'model_provider = {toml_value(profile.model_provider)}',
+        f'model = {toml_value(profile.model)}',
+        f'review_model = {toml_value(profile.review_model)}',
+        f'model_reasoning_effort = {toml_value(profile.model_reasoning_effort)}',
+        f'disable_response_storage = {toml_value(profile.disable_response_storage)}',
+        f'network_access = {toml_value(profile.network_access)}',
+        f'model_context_window = {toml_value(profile.model_context_window)}',
+        f'model_auto_compact_token_limit = {toml_value(profile.model_auto_compact_token_limit)}',
+        "",
+    ]
+    for provider in profile_providers(db, profile.id):
+        lines.extend(
+            [
+                f"[model_providers.{toml_table_key(provider.name)}]",
+                f"name = {toml_value(provider.name)}",
+                f"provider_type = {toml_value(provider.provider_type)}",
+                f"base_url = {toml_value(provider.base_url)}",
+                f"wire_api = {toml_value(provider.wire_api)}",
+                f"requires_openai_auth = {toml_value(provider.requires_openai_auth)}",
+                f"enabled = {toml_value(provider.enabled)}",
+            ]
+        )
+        if provider.api_key_id:
+            lines.append(f"api_key_ref = {toml_value(str(provider.api_key_id))}")
+        lines.append("")
+    for plugin in profile_plugins(db, profile.id):
+        lines.extend(
+            [
+                f"[plugins.{toml_table_key(plugin.plugin_id)}]",
+                f"name = {toml_value(plugin.name)}",
+                f"category = {toml_value(plugin.category)}",
+                f"enabled = {toml_value(plugin.enabled)}",
+                f"source_type = {toml_value(plugin.source_type)}",
+                f"source = {toml_value(plugin.source)}",
+                f"version = {toml_value(plugin.version)}",
+                "",
+            ]
+        )
+    for project in profile_trusted_projects(db, profile.id):
+        lines.extend(
+            [
+                f"[projects.{toml_table_key(project.path)}]",
+                f"trust_level = {toml_value(project.trust_level)}",
+                "",
+            ]
+        )
+    lines.append("# Secrets are redacted by default. Use api_key_ref or api_key_env instead of raw keys.")
+    return "\n".join(lines).strip() + "\n"
+
+
+def import_profile_from_toml(db: Session, payload: ConfigProfileImportPayload) -> ConfigProfile:
+    try:
+        parsed = tomllib.loads(payload.toml_text)
+    except tomllib.TOMLDecodeError as exc:
+        raise HTTPException(status_code=422, detail=f"TOML is invalid: {exc}") from exc
+
+    profile = ConfigProfile(
+        name=payload.name or str(parsed.get("profile_name") or parsed.get("name") or f"{parsed.get('model_provider', 'Imported')} Config"),
+        description=str(parsed.get("description") or "Imported from config.toml"),
+        is_default=payload.set_default,
+        model_provider=str(parsed.get("model_provider") or "OpenAI"),
+        model=str(parsed.get("model") or "gpt-5.5"),
+        review_model=str(parsed.get("review_model") or parsed.get("model") or "gpt-5.5"),
+        model_reasoning_effort=str(parsed.get("model_reasoning_effort") or "medium"),
+        disable_response_storage=bool(parsed.get("disable_response_storage", False)),
+        network_access=str(parsed.get("network_access") or "disabled"),
+        model_context_window=int(parsed.get("model_context_window") or 200000),
+        model_auto_compact_token_limit=int(parsed.get("model_auto_compact_token_limit") or 160000),
+    )
+    if payload.set_default:
+        set_config_profile_default(db, profile)
+    db.add(profile)
+    db.flush()
+
+    providers = parsed.get("model_providers") or {}
+    created_providers: list[ProviderProfile] = []
+    for key, value in providers.items():
+        if not isinstance(value, dict):
+            continue
+        api_key_id = None
+        api_key_ref = value.get("api_key_ref")
+        if api_key_ref:
+            try:
+                candidate_id = UUID(str(api_key_ref))
+                if db.get(ApiKey, candidate_id):
+                    api_key_id = candidate_id
+            except ValueError:
+                api_key_id = None
+        provider = ProviderProfile(
+            config_profile_id=profile.id,
+            name=str(value.get("name") or key),
+            provider_type=str(value.get("provider_type") or "openai_compatible"),
+            base_url=str(value.get("base_url") or "https://api.openai.com/v1"),
+            wire_api=str(value.get("wire_api") or "responses"),
+            requires_openai_auth=bool(value.get("requires_openai_auth", True)),
+            api_key_id=api_key_id,
+            enabled=bool(value.get("enabled", True)),
+        )
+        db.add(provider)
+        created_providers.append(provider)
+    if not created_providers:
+        provider = ProviderProfile(config_profile_id=profile.id, name=profile.model_provider, base_url="https://api.openai.com/v1")
+        db.add(provider)
+        created_providers.append(provider)
+    db.flush()
+    active = next((item for item in created_providers if item.name == profile.model_provider), created_providers[0])
+    profile.active_provider_profile_id = active.id
+
+    plugins = parsed.get("plugins") or {}
+    if plugins:
+        for key, value in plugins.items():
+            value = value if isinstance(value, dict) else {}
+            db.add(
+                ConfigPlugin(
+                    config_profile_id=profile.id,
+                    plugin_id=str(key),
+                    name=str(value.get("name") or key),
+                    category=str(value.get("category") or "plugin"),
+                    enabled=bool(value.get("enabled", True)),
+                    source_type=str(value.get("source_type") or "imported"),
+                    source=str(value.get("source") or ""),
+                    version=str(value.get("version") or "1.0.0"),
+                )
+            )
+    else:
+        for plugin in BUILTIN_CONFIG_PLUGINS:
+            db.add(ConfigPlugin(config_profile_id=profile.id, **plugin, enabled=True))
+
+    projects = parsed.get("projects") or {}
+    for path, value in projects.items():
+        value = value if isinstance(value, dict) else {}
+        db.add(TrustedProject(config_profile_id=profile.id, path=str(path), trust_level=str(value.get("trust_level") or "trusted")))
+    db.commit()
+    db.refresh(profile)
+    return profile
+
+
+def seed_builtin_skill_packs(db: Session) -> list[SkillPack]:
+    packs: list[SkillPack] = []
+    for spec in BUILTIN_SKILLS:
+        pack = db.scalar(select(SkillPack).where(SkillPack.slug == spec["slug"]))
+        if not pack:
+            pack = SkillPack(
+                name=spec["name"],
+                slug=spec["slug"],
+                category=spec["category"],
+                description=spec["description"],
+                token_budget=int(spec["token_budget"]),
+                source_type="builtin",
+                local_path=str(REPO_ROOT / "skills" / spec["slug"]),
+                quality_score=76,
+            )
+            db.add(pack)
+            db.flush()
+        else:
+            pack.name = spec["name"]
+            pack.category = spec["category"]
+            pack.description = spec["description"]
+            pack.token_budget = int(spec["token_budget"])
+            pack.local_path = pack.local_path or str(REPO_ROOT / "skills" / spec["slug"])
+        for prompt_spec in spec["prompts"]:
+            prompt = db.scalar(select(SkillPrompt).where(SkillPrompt.skill_pack_id == pack.id, SkillPrompt.name == prompt_spec["name"]))
+            if not prompt:
+                db.add(SkillPrompt(skill_pack_id=pack.id, **prompt_spec))
+            else:
+                prompt.purpose = prompt_spec["purpose"]
+                prompt.when_to_use = prompt_spec["when_to_use"]
+                prompt.prompt_template = prompt_spec["prompt_template"]
+                prompt.success_criteria_json = prompt_spec.get("success_criteria_json", {})
+                prompt.token_budget = int(prompt_spec["token_budget"])
+        score = db.scalar(select(SkillScore).where(SkillScore.skill_pack_id == pack.id))
+        if not score:
+            db.add(SkillScore(skill_pack_id=pack.id))
+        packs.append(pack)
+    db.commit()
+    return packs
+
+
+def skill_pack_read(db: Session, pack: SkillPack) -> SkillPackRead:
+    prompts = list(db.scalars(select(SkillPrompt).where(SkillPrompt.skill_pack_id == pack.id).order_by(SkillPrompt.name)).all())
+    score = db.scalar(select(SkillScore).where(SkillScore.skill_pack_id == pack.id))
+    return SkillPackRead.model_validate(pack).model_copy(
+        update={
+            "prompts": [SkillPromptRead.model_validate(item) for item in prompts],
+            "score": {
+                "success_count": score.success_count if score else 0,
+                "failure_count": score.failure_count if score else 0,
+                "avg_quality_delta": score.avg_quality_delta if score else 0,
+                "avg_tokens_saved": score.avg_tokens_saved if score else 0,
+                "last_used_at": score.last_used_at.isoformat() if score and score.last_used_at else None,
+            },
+        }
+    )
+
+
+def seed_run_profiles(db: Session) -> list[RunProfile]:
+    default_profile = seed_default_config_profile(db)
+    items: list[RunProfile] = []
+    for spec in RUN_PROFILE_PRESETS:
+        item = db.scalar(select(RunProfile).where(RunProfile.slug == spec["slug"]))
+        if not item:
+            item = RunProfile(config_profile_id=default_profile.id, **spec)
+            db.add(item)
+        else:
+            item.name = spec["name"]
+            item.description = spec["description"]
+            item.skill_slugs = spec["skill_slugs"]
+            item.token_budget = spec["token_budget"]
+            item.quality_threshold = spec["quality_threshold"]
+            item.max_iterations = spec["max_iterations"]
+            item.research_mode = spec["research_mode"]
+            item.config_profile_id = item.config_profile_id or default_profile.id
+        items.append(item)
+    db.commit()
+    return items
+
+
+def seed_prompt_fragments(db: Session) -> None:
+    for slug, category, content in PROMPT_FRAGMENT_PRESETS:
+        fragment = db.scalar(select(PromptFragment).where(PromptFragment.slug == slug))
+        token_estimate = max(1, len(content.split()))
+        if not fragment:
+            db.add(PromptFragment(slug=slug, category=category, content=content, token_estimate=token_estimate))
+        else:
+            fragment.category = category
+            fragment.content = content
+            fragment.token_estimate = token_estimate
+    db.commit()
+
+
+def source_items_for_query(source_type: str, query: str, limit: int) -> list[dict]:
+    fallback = [
+        {
+            "title": f"{query} prompt checklist",
+            "source_url": None,
+            "summary": "Quarantined template candidate generated from the scan query. Review before enabling.",
+            "category": "prompt_library",
+            "usefulness_score": 55,
+            "metadata_json": {"safe_mode": "fallback", "query": query},
+        }
+    ]
+    if source_type == "web_url":
+        try:
+            request = urllib.request.Request(query, headers={"User-Agent": "ForgeTrend-Scanner"})
+            with urllib.request.urlopen(request, timeout=6) as response:
+                content_type = response.headers.get("content-type", "")
+                raw = response.read(120000).decode("utf-8", errors="ignore")
+            title_match = re.search(r"<title[^>]*>(.*?)</title>", raw, flags=re.I | re.S)
+            title = re.sub(r"\s+", " ", title_match.group(1)).strip() if title_match else query
+            text = re.sub(r"<script.*?</script>|<style.*?</style>", " ", raw, flags=re.I | re.S)
+            text = re.sub(r"<[^>]+>", " ", text)
+            text = re.sub(r"\s+", " ", text).strip()
+            return [
+                {
+                    "title": title[:255],
+                    "source_url": query,
+                    "summary": text[:900] or f"Fetched {content_type or 'web page'} for review.",
+                    "category": "web_url",
+                    "usefulness_score": 60,
+                    "metadata_json": {"safe_mode": "text_only", "content_type": content_type, "bytes_sampled": len(raw)},
+                }
+            ]
+        except Exception as exc:
+            item = dict(fallback[0])
+            item["source_url"] = query
+            item["summary"] = f"Web scan fallback because fetch failed: {exc}"
+            item["metadata_json"] = {"safe_mode": "fallback", "query": query, "error": str(exc)}
+            return [item]
+    if source_type == "github_repo":
+        repo = query.replace("https://github.com/", "").strip("/")
+        parts = repo.split("/")
+        if len(parts) >= 2:
+            owner, name = parts[0], parts[1]
+            for branch in ["main", "master"]:
+                try:
+                    url = f"https://raw.githubusercontent.com/{owner}/{name}/{branch}/README.md"
+                    request = urllib.request.Request(url, headers={"User-Agent": "ForgeTrend-Scanner"})
+                    with urllib.request.urlopen(request, timeout=6) as response:
+                        readme = response.read(120000).decode("utf-8", errors="ignore")
+                    return [
+                        {
+                            "title": f"{owner}/{name}",
+                            "source_url": f"https://github.com/{owner}/{name}",
+                            "summary": readme[:1000] or "GitHub repository README fetched for review.",
+                            "category": "github_repo",
+                            "usefulness_score": 65,
+                            "metadata_json": {"safe_mode": "readme_only", "branch": branch},
+                        }
+                    ]
+                except Exception:
+                    continue
+        item = dict(fallback[0])
+        item["summary"] = "GitHub repo scan could not fetch README. Item remains quarantined for manual review."
+        item["metadata_json"] = {"safe_mode": "fallback", "query": query}
+        return [item]
+    if source_type != "github_search":
+        return fallback[:limit]
+    try:
+        url = f"https://api.github.com/search/repositories?q={quote_plus(query)}&per_page={limit}"
+        request = urllib.request.Request(url, headers={"User-Agent": "ForgeTrend-Scanner"})
+        with urllib.request.urlopen(request, timeout=6) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        items = []
+        for repo in data.get("items", [])[:limit]:
+            items.append(
+                {
+                    "title": repo.get("full_name") or repo.get("name") or "GitHub repository",
+                    "source_url": repo.get("html_url"),
+                    "summary": (repo.get("description") or "Repository discovered by controlled GitHub scan.")[:800],
+                    "category": "github_repo",
+                    "usefulness_score": min(90, 50 + int(repo.get("stargazers_count") or 0) // 50),
+                    "metadata_json": {
+                        "stars": repo.get("stargazers_count") or 0,
+                        "language": repo.get("language"),
+                        "safe_mode": "metadata_only",
+                    },
+                }
+            )
+        return items or fallback[:limit]
+    except Exception as exc:
+        item = dict(fallback[0])
+        item["summary"] = f"GitHub scan fallback because live metadata fetch failed: {exc}"
+        item["metadata_json"] = {"safe_mode": "fallback", "query": query, "error": str(exc)}
+        return [item]
+
+
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse(status="ok", service="forge-trend-api")
@@ -587,6 +1393,578 @@ def health() -> HealthResponse:
 @app.get("/doctor", response_model=DoctorResponse)
 def doctor(db: Session = Depends(get_db)) -> DoctorResponse:
     return build_doctor_report(db)
+
+
+@app.get("/config-profiles", response_model=list[ConfigProfileRead])
+def list_config_profiles(db: Session = Depends(get_db)) -> list[ConfigProfileRead]:
+    seed_default_config_profile(db)
+    profiles = list(db.scalars(select(ConfigProfile).order_by(desc(ConfigProfile.is_default), desc(ConfigProfile.updated_at))).all())
+    return [config_profile_read(db, item) for item in profiles]
+
+
+@app.post("/config-profiles", response_model=ConfigProfileRead)
+def create_config_profile(payload: ConfigProfileCreate, db: Session = Depends(get_db)) -> ConfigProfileRead:
+    item = ConfigProfile(**payload.model_dump())
+    if payload.is_default:
+        set_config_profile_default(db, item)
+    db.add(item)
+    db.flush()
+    provider = ProviderProfile(
+        config_profile_id=item.id,
+        name=item.model_provider,
+        provider_type="openai_compatible",
+        base_url="https://api.openai.com/v1",
+        wire_api="responses",
+        requires_openai_auth=True,
+        enabled=True,
+    )
+    db.add(provider)
+    db.flush()
+    item.active_provider_profile_id = provider.id
+    for plugin in BUILTIN_CONFIG_PLUGINS:
+        db.add(ConfigPlugin(config_profile_id=item.id, **plugin, enabled=True))
+    db.commit()
+    db.refresh(item)
+    return config_profile_read(db, item)
+
+
+@app.get("/config-profiles/default/runtime", response_model=RuntimeConfigResponse)
+def read_default_runtime_config(db: Session = Depends(get_db)) -> RuntimeConfigResponse:
+    seed_builtin_skill_packs(db)
+    return build_runtime_config(db)
+
+
+@app.get("/config-profiles/{id}", response_model=ConfigProfileRead)
+def get_config_profile(id: UUID, db: Session = Depends(get_db)) -> ConfigProfileRead:
+    profile = get_or_404(db, ConfigProfile, id)
+    return config_profile_read(db, profile)
+
+
+@app.get("/config-profiles/{id}/runtime", response_model=RuntimeConfigResponse)
+def read_runtime_config(id: UUID, db: Session = Depends(get_db)) -> RuntimeConfigResponse:
+    seed_builtin_skill_packs(db)
+    profile = get_or_404(db, ConfigProfile, id)
+    return build_runtime_config(db, profile)
+
+
+@app.patch("/config-profiles/{id}", response_model=ConfigProfileRead)
+def patch_config_profile(id: UUID, payload: ConfigProfilePatch, db: Session = Depends(get_db)) -> ConfigProfileRead:
+    profile = get_or_404(db, ConfigProfile, id)
+    patch = payload.model_dump(exclude_unset=True)
+    if patch.pop("is_default", None):
+        set_config_profile_default(db, profile)
+    for field, value in patch.items():
+        setattr(profile, field, value)
+    db.commit()
+    db.refresh(profile)
+    return config_profile_read(db, profile)
+
+
+@app.delete("/config-profiles/{id}", response_model=ActionResponse)
+def delete_config_profile(id: UUID, db: Session = Depends(get_db)) -> ActionResponse:
+    profile = get_or_404(db, ConfigProfile, id)
+    db.query(FactoryBrief).filter(FactoryBrief.config_profile_id == id).update({FactoryBrief.config_profile_id: None}, synchronize_session=False)
+    db.query(ProviderProfile).filter(ProviderProfile.config_profile_id == id).delete(synchronize_session=False)
+    db.query(ConfigPlugin).filter(ConfigPlugin.config_profile_id == id).delete(synchronize_session=False)
+    db.query(TrustedProject).filter(TrustedProject.config_profile_id == id).delete(synchronize_session=False)
+    was_default = profile.is_default
+    db.delete(profile)
+    db.flush()
+    if was_default:
+        replacement = db.scalar(select(ConfigProfile).order_by(desc(ConfigProfile.updated_at)))
+        if replacement:
+            replacement.is_default = True
+    db.commit()
+    return ActionResponse(status="deleted", detail="Config profile deleted")
+
+
+@app.post("/config-profiles/{id}/set-default", response_model=ConfigProfileRead)
+def make_config_profile_default(id: UUID, db: Session = Depends(get_db)) -> ConfigProfileRead:
+    profile = get_or_404(db, ConfigProfile, id)
+    set_config_profile_default(db, profile)
+    db.commit()
+    db.refresh(profile)
+    return config_profile_read(db, profile)
+
+
+@app.post("/config-profiles/import-toml", response_model=ConfigProfileRead)
+def import_config_profile_toml(payload: ConfigProfileImportPayload, db: Session = Depends(get_db)) -> ConfigProfileRead:
+    profile = import_profile_from_toml(db, payload)
+    return config_profile_read(db, profile)
+
+
+@app.post("/config-profiles/{id}/import-toml", response_model=ConfigProfileRead)
+def import_config_profile_toml_compat(id: UUID, payload: ConfigProfileImportPayload, db: Session = Depends(get_db)) -> ConfigProfileRead:
+    get_or_404(db, ConfigProfile, id)
+    profile = import_profile_from_toml(db, payload)
+    return config_profile_read(db, profile)
+
+
+@app.get("/config-profiles/{id}/export-toml", response_model=ConfigProfileExportResponse)
+def export_config_profile(id: UUID, include_secrets: bool = False, db: Session = Depends(get_db)) -> ConfigProfileExportResponse:
+    profile = get_or_404(db, ConfigProfile, id)
+    toml_text = export_profile_toml(db, profile)
+    if include_secrets:
+        toml_text += "\n# include_secrets=true was requested, but ForgeTrend still exports api_key_ref only. Raw encrypted keys are never decrypted for TOML export.\n"
+    return ConfigProfileExportResponse(config_profile_id=profile.id, toml_text=toml_text)
+
+
+@app.post("/config-profiles/{id}/test", response_model=ActionResponse)
+def test_config_profile(id: UUID, db: Session = Depends(get_db)) -> ActionResponse:
+    profile = get_or_404(db, ConfigProfile, id)
+    runtime = build_runtime_config(db, profile)
+    provider = runtime.provider
+    issues: list[str] = []
+    if provider.get("requires_openai_auth") and not provider.get("api_key_id"):
+        issues.append("provider requires auth but no dashboard API key is assigned")
+    if profile.network_access not in {"enabled", "disabled", "restricted"}:
+        issues.append("network_access should be enabled, disabled, or restricted")
+    if profile.model_auto_compact_token_limit >= profile.model_context_window:
+        issues.append("auto compact token limit should be lower than context window")
+    status = "warning" if issues else "passed"
+    detail = "; ".join(issues) if issues else f"Profile {profile.name} is locally valid. Secrets are redacted and provider base URL is configured."
+    return ActionResponse(status=status, detail=detail)
+
+
+@app.post("/config-profiles/{id}/provider-profiles", response_model=ProviderProfileRead)
+def create_provider_profile(id: UUID, payload: ProviderProfileCreate, db: Session = Depends(get_db)) -> ProviderProfile:
+    get_or_404(db, ConfigProfile, id)
+    if payload.api_key_id:
+        get_or_404(db, ApiKey, payload.api_key_id)
+    item = ProviderProfile(config_profile_id=id, **payload.model_dump())
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@app.patch("/provider-profiles/{id}", response_model=ProviderProfileRead)
+def patch_provider_profile(id: UUID, payload: ProviderProfilePatch, db: Session = Depends(get_db)) -> ProviderProfile:
+    item = get_or_404(db, ProviderProfile, id)
+    patch = payload.model_dump(exclude_unset=True)
+    if patch.get("api_key_id"):
+        get_or_404(db, ApiKey, patch["api_key_id"])
+    for field, value in patch.items():
+        setattr(item, field, value)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@app.delete("/provider-profiles/{id}", response_model=ActionResponse)
+def delete_provider_profile(id: UUID, db: Session = Depends(get_db)) -> ActionResponse:
+    item = get_or_404(db, ProviderProfile, id)
+    db.query(ConfigProfile).filter(ConfigProfile.active_provider_profile_id == id).update({ConfigProfile.active_provider_profile_id: None}, synchronize_session=False)
+    db.delete(item)
+    db.commit()
+    return ActionResponse(status="deleted", detail="Provider profile deleted")
+
+
+@app.post("/config-profiles/{id}/plugins", response_model=ConfigPluginRead)
+def create_config_plugin(id: UUID, payload: ConfigPluginCreate, db: Session = Depends(get_db)) -> ConfigPlugin:
+    get_or_404(db, ConfigProfile, id)
+    item = ConfigPlugin(config_profile_id=id, **payload.model_dump())
+    db.add(item)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Plugin already exists in this profile") from exc
+    db.refresh(item)
+    return item
+
+
+@app.patch("/config-plugins/{id}", response_model=ConfigPluginRead)
+def patch_config_plugin(id: UUID, payload: ConfigPluginPatch, db: Session = Depends(get_db)) -> ConfigPlugin:
+    item = get_or_404(db, ConfigPlugin, id)
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(item, field, value)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@app.delete("/config-plugins/{id}", response_model=ActionResponse)
+def delete_config_plugin(id: UUID, db: Session = Depends(get_db)) -> ActionResponse:
+    item = get_or_404(db, ConfigPlugin, id)
+    db.delete(item)
+    db.commit()
+    return ActionResponse(status="deleted", detail="Config plugin deleted")
+
+
+@app.post("/config-profiles/{id}/trusted-projects", response_model=TrustedProjectRead)
+def create_trusted_project(id: UUID, payload: TrustedProjectCreate, db: Session = Depends(get_db)) -> TrustedProject:
+    get_or_404(db, ConfigProfile, id)
+    item = TrustedProject(config_profile_id=id, **payload.model_dump())
+    db.add(item)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Project path already exists in this profile") from exc
+    db.refresh(item)
+    return item
+
+
+@app.patch("/trusted-projects/{id}", response_model=TrustedProjectRead)
+def patch_trusted_project(id: UUID, payload: TrustedProjectPatch, db: Session = Depends(get_db)) -> TrustedProject:
+    item = get_or_404(db, TrustedProject, id)
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(item, field, value)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@app.delete("/trusted-projects/{id}", response_model=ActionResponse)
+def delete_trusted_project(id: UUID, db: Session = Depends(get_db)) -> ActionResponse:
+    item = get_or_404(db, TrustedProject, id)
+    db.delete(item)
+    db.commit()
+    return ActionResponse(status="deleted", detail="Trusted project deleted")
+
+
+@app.get("/skill-packs", response_model=list[SkillPackRead])
+@app.get("/skills/packs", response_model=list[SkillPackRead])
+def list_skill_packs(db: Session = Depends(get_db)) -> list[SkillPackRead]:
+    seed_builtin_skill_packs(db)
+    packs = list(db.scalars(select(SkillPack).order_by(SkillPack.category, desc(SkillPack.quality_score), SkillPack.name)).all())
+    return [skill_pack_read(db, item) for item in packs]
+
+
+@app.post("/skill-packs/scan-installed", response_model=list[SkillPackRead])
+def scan_installed_skill_packs(db: Session = Depends(get_db)) -> list[SkillPackRead]:
+    seed_builtin_skill_packs(db)
+    skills_dir = REPO_ROOT / "skills"
+    if skills_dir.exists():
+        for skill_file in skills_dir.glob("*/skill.toml"):
+            try:
+                parsed = tomllib.loads(skill_file.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            slug = str(parsed.get("slug") or skill_file.parent.name)
+            pack = db.scalar(select(SkillPack).where(SkillPack.slug == slug))
+            if not pack:
+                pack = SkillPack(
+                    name=str(parsed.get("name") or slug.replace("_", " ").title()),
+                    slug=slug,
+                    category=str(parsed.get("category") or "imported"),
+                    description=str(parsed.get("description") or ""),
+                    version=str(parsed.get("version") or "1.0.0"),
+                    token_budget=int(parsed.get("token_budget") or 1000),
+                    source_type="local_folder",
+                    local_path=str(skill_file.parent),
+                    enabled=True,
+                )
+                db.add(pack)
+                db.flush()
+            pack.local_path = str(skill_file.parent)
+            pack.description = str(parsed.get("description") or pack.description or "")
+            prompts = parsed.get("prompts") or {}
+            for prompt_name, prompt_value in prompts.items():
+                if not isinstance(prompt_value, dict):
+                    continue
+                prompt = db.scalar(select(SkillPrompt).where(SkillPrompt.skill_pack_id == pack.id, SkillPrompt.name == str(prompt_name)))
+                if not prompt:
+                    prompt_path = skill_file.parent / "prompts" / f"{prompt_name}.md"
+                    template = prompt_path.read_text(encoding="utf-8") if prompt_path.exists() else str(prompt_value.get("prompt_template") or "")
+                    db.add(
+                        SkillPrompt(
+                            skill_pack_id=pack.id,
+                            name=str(prompt_name),
+                            purpose=str(prompt_value.get("purpose") or ""),
+                            when_to_use=str(prompt_value.get("when_to_use") or ""),
+                            prompt_template=template,
+                            token_budget=int(prompt_value.get("token_budget") or parsed.get("token_budget") or 1000),
+                        )
+                    )
+        db.commit()
+    packs = list(db.scalars(select(SkillPack).order_by(SkillPack.category, SkillPack.name)).all())
+    return [skill_pack_read(db, item) for item in packs]
+
+
+@app.get("/skill-packs/{id}", response_model=SkillPackRead)
+def get_skill_pack(id: UUID, db: Session = Depends(get_db)) -> SkillPackRead:
+    pack = get_or_404(db, SkillPack, id)
+    return skill_pack_read(db, pack)
+
+
+@app.patch("/skill-packs/{id}", response_model=SkillPackRead)
+def patch_skill_pack(id: UUID, payload: SkillPackPatch, db: Session = Depends(get_db)) -> SkillPackRead:
+    pack = get_or_404(db, SkillPack, id)
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(pack, field, value)
+    db.commit()
+    db.refresh(pack)
+    return skill_pack_read(db, pack)
+
+
+@app.post("/skill-packs/{id}/test", response_model=SkillTestResponse)
+def test_skill_pack(id: UUID, payload: SkillTestPayload, db: Session = Depends(get_db)) -> SkillTestResponse:
+    pack = get_or_404(db, SkillPack, id)
+    prompt = db.scalar(select(SkillPrompt).where(SkillPrompt.skill_pack_id == pack.id).order_by(SkillPrompt.name))
+    if not prompt:
+        raise HTTPException(status_code=404, detail="Skill pack has no prompts")
+    rendered = prompt.prompt_template
+    for key, value in payload.sample_input.items():
+        rendered = rendered.replace("{{" + str(key) + "}}", str(value))
+    return SkillTestResponse(skill_pack_id=pack.id, rendered_prompt=rendered, estimated_tokens=max(1, len(rendered.split())))
+
+
+@app.post("/internal/skill-runs", response_model=ActionResponse)
+def record_skill_run(payload: dict, db: Session = Depends(get_db)) -> ActionResponse:
+    skill_slug = str(payload.get("skill_slug") or "")
+    pack = db.scalar(select(SkillPack).where(SkillPack.slug == skill_slug))
+    if not pack:
+        return ActionResponse(status="skipped", detail=f"Unknown skill {skill_slug}")
+    db.add(
+        SkillRun(
+            skill_pack_id=pack.id,
+            project_id=UUID(str(payload["project_id"])) if payload.get("project_id") else None,
+            factory_brief_id=UUID(str(payload["factory_brief_id"])) if payload.get("factory_brief_id") else None,
+            agent_name=str(payload.get("agent_name") or "autopilot"),
+            input_hash=str(payload.get("input_hash") or ""),
+            output_summary=str(payload.get("output_summary") or ""),
+            tokens_estimated=int(payload.get("tokens_estimated") or 0),
+            status=str(payload.get("status") or "used"),
+        )
+    )
+    score = db.scalar(select(SkillScore).where(SkillScore.skill_pack_id == pack.id))
+    if score:
+        score.success_count += 1 if payload.get("status") in {None, "used", "succeeded"} else 0
+        score.failure_count += 1 if payload.get("status") == "failed" else 0
+        score.last_used_at = datetime.now(UTC)
+    db.commit()
+    return ActionResponse(status="recorded", detail=f"Skill run recorded for {skill_slug}")
+
+
+@app.get("/run-profiles", response_model=list[RunProfileRead])
+def list_run_profiles(db: Session = Depends(get_db)) -> list[RunProfile]:
+    seed_builtin_skill_packs(db)
+    seed_run_profiles(db)
+    return list(db.scalars(select(RunProfile).where(RunProfile.enabled.is_(True)).order_by(RunProfile.name)).all())
+
+
+@app.post("/scan/runs", response_model=ScanRunDetail)
+def create_source_scan(payload: SourceScanCreate, db: Session = Depends(get_db)) -> ScanRunDetail:
+    scan = SourceScanRun(source_type=payload.source_type, query=payload.query, status="completed", finished_at=datetime.now(UTC))
+    db.add(scan)
+    db.flush()
+    item_payloads = source_items_for_query(payload.source_type, payload.query, payload.limit)
+    items: list[SourceItem] = []
+    for item_payload in item_payloads:
+        item = SourceItem(scan_run_id=scan.id, source_type=payload.source_type, status="quarantined", **item_payload)
+        db.add(item)
+        items.append(item)
+    scan.summary = f"{len(items)} item(s) discovered and quarantined. External text/config must be reviewed before enabling."
+    db.commit()
+    db.refresh(scan)
+    return ScanRunDetail.model_validate(scan).model_copy(update={"items": [SourceItemRead.model_validate(item) for item in items]})
+
+
+@app.get("/scan/runs", response_model=list[SourceScanRunRead])
+def list_source_scans(db: Session = Depends(get_db)) -> list[SourceScanRun]:
+    return list(db.scalars(select(SourceScanRun).order_by(desc(SourceScanRun.created_at)).limit(50)).all())
+
+
+@app.get("/source-items", response_model=list[SourceItemRead])
+def list_source_items(status: str | None = None, db: Session = Depends(get_db)) -> list[SourceItem]:
+    query = select(SourceItem).order_by(desc(SourceItem.created_at)).limit(100)
+    if status:
+        query = select(SourceItem).where(SourceItem.status == status).order_by(desc(SourceItem.created_at)).limit(100)
+    return list(db.scalars(query).all())
+
+
+@app.patch("/source-items/{id}", response_model=SourceItemRead)
+def patch_source_item(id: UUID, payload: SourceItemPatch, db: Session = Depends(get_db)) -> SourceItem:
+    item = get_or_404(db, SourceItem, id)
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(item, field, value)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@app.post("/source-items/{id}/convert-to-skill", response_model=SkillPackRead)
+def convert_source_item_to_skill(id: UUID, db: Session = Depends(get_db)) -> SkillPackRead:
+    item = get_or_404(db, SourceItem, id)
+    slug = slugify(item.title)[:120] or f"source-skill-{item.id}"
+    slug = slug.replace("-", "_")
+    existing = db.scalar(select(SkillPack).where(SkillPack.slug == slug))
+    if existing:
+        return skill_pack_read(db, existing)
+    pack = SkillPack(
+        name=item.title[:255],
+        slug=slug,
+        category=item.category or "external_prompt",
+        description=item.summary,
+        enabled=False,
+        source_type="external_quarantined",
+        source_url=item.source_url,
+        quality_score=item.usefulness_score,
+        token_budget=1000,
+    )
+    db.add(pack)
+    db.flush()
+    db.add(
+        SkillPrompt(
+            skill_pack_id=pack.id,
+            name="review_before_use",
+            purpose="Quarantined external prompt candidate. Review and rewrite before enabling.",
+            when_to_use="Never auto-use before human review.",
+            prompt_template=f"Source summary only. Do not execute code.\n\n{item.summary}",
+            token_budget=500,
+        )
+    )
+    item.status = "reviewed"
+    db.commit()
+    db.refresh(pack)
+    return skill_pack_read(db, pack)
+
+
+@app.get("/prompt-context/summary", response_model=PromptContextSummary)
+def prompt_context_summary(db: Session = Depends(get_db)) -> PromptContextSummary:
+    seed_prompt_fragments(db)
+    fragments = list(db.scalars(select(PromptFragment).order_by(PromptFragment.category, PromptFragment.slug)).all())
+    packs = list(db.scalars(select(ContextPack).order_by(desc(ContextPack.updated_at)).limit(20)).all())
+    fragment_payloads = [
+        {"slug": item.slug, "category": item.category, "token_estimate": item.token_estimate, "summary": item.content[:160]}
+        for item in fragments
+    ]
+    pack_payloads = [
+        {"pack_type": item.pack_type, "token_estimate": item.token_estimate, "important_files": item.important_files, "summary": item.summary[:240]}
+        for item in packs
+    ]
+    total = sum(item["token_estimate"] for item in fragment_payloads) + sum(item["token_estimate"] for item in pack_payloads)
+    return PromptContextSummary(
+        prompt_fragments=fragment_payloads,
+        context_packs=pack_payloads,
+        token_budget_decision={
+            "estimated_reusable_tokens": total,
+            "policy": "Use only needed skill prompts and compressed context packs before agent calls.",
+        },
+    )
+
+
+@app.post("/internal/context-packs", response_model=ContextPackRead)
+def create_context_pack(payload: ContextPackCreate, db: Session = Depends(get_db)) -> ContextPack:
+    existing = db.scalar(
+        select(ContextPack).where(
+            ContextPack.project_id == payload.project_id,
+            ContextPack.factory_brief_id == payload.factory_brief_id,
+            ContextPack.pack_type == payload.pack_type,
+            ContextPack.full_text_hash == payload.full_text_hash,
+        )
+    )
+    if existing:
+        existing.summary = payload.summary
+        existing.important_files = payload.important_files
+        existing.token_estimate = payload.token_estimate
+        db.commit()
+        db.refresh(existing)
+        return existing
+    item = ContextPack(**payload.model_dump())
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@app.get("/learning/rules", response_model=list[LearningRuleRead])
+def list_learning_rules(db: Session = Depends(get_db)) -> list[LearningRule]:
+    return list(db.scalars(select(LearningRule).order_by(desc(LearningRule.enabled), desc(LearningRule.confidence_score), LearningRule.rule_key)).all())
+
+
+@app.patch("/learning/rules/{id}", response_model=LearningRuleRead)
+def patch_learning_rule(id: UUID, payload: LearningRulePatch, db: Session = Depends(get_db)) -> LearningRule:
+    rule = get_or_404(db, LearningRule, id)
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(rule, field, value)
+    db.commit()
+    db.refresh(rule)
+    return rule
+
+
+def provider_endpoint(base_url: str, wire_api: str) -> str:
+    base = base_url.rstrip("/")
+    if wire_api == "chat_completions":
+        return base if base.endswith("/chat/completions") else f"{base}/chat/completions"
+    return base if base.endswith("/responses") else f"{base}/responses"
+
+
+def extract_provider_text(payload: dict, wire_api: str) -> str:
+    if wire_api == "chat_completions":
+        return str((((payload.get("choices") or [{}])[0].get("message") or {}).get("content")) or "")
+    if payload.get("output_text"):
+        return str(payload["output_text"])
+    chunks: list[str] = []
+    for item in payload.get("output") or []:
+        for content in item.get("content") or []:
+            if content.get("type") in {"output_text", "text"} and content.get("text"):
+                chunks.append(str(content["text"]))
+    return "\n".join(chunks).strip()
+
+
+@app.post("/internal/provider-completion", response_model=ProviderCompletionResponse)
+def provider_completion(payload: ProviderCompletionRequest, db: Session = Depends(get_db)) -> ProviderCompletionResponse:
+    profile = db.get(ConfigProfile, payload.config_profile_id) if payload.config_profile_id else seed_default_config_profile(db)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Config profile not found")
+    runtime = build_runtime_config(db, profile)
+    provider_payload = runtime.provider
+    provider_id = provider_payload.get("id")
+    provider = db.get(ProviderProfile, UUID(str(provider_id))) if provider_id else None
+    if not provider or not provider.enabled:
+        return ProviderCompletionResponse(status="skipped", provider="deterministic", model=profile.model, text="", detail="No enabled provider profile.", tokens_estimated=0)
+    if provider.provider_type not in {"openai_compatible", "openai"}:
+        return ProviderCompletionResponse(status="skipped", provider=provider.provider_type, model=profile.model, text="", detail="Provider type is handled by worker runtime, not API completion.", tokens_estimated=0)
+    if profile.network_access == "disabled":
+        return ProviderCompletionResponse(status="skipped", provider=provider.name, model=profile.model, text="", detail="Network access is disabled for this config profile.", tokens_estimated=0)
+    if not provider.api_key_id:
+        return ProviderCompletionResponse(status="skipped", provider=provider.name, model=profile.model, text="", detail="No API key assigned to provider profile.", tokens_estimated=0)
+    api_key = db.get(ApiKey, provider.api_key_id)
+    if not api_key or api_key.status != "active":
+        return ProviderCompletionResponse(status="skipped", provider=provider.name, model=profile.model, text="", detail="Assigned API key is not active.", tokens_estimated=0)
+    raw_key = decrypt_secret(api_key.encrypted_key)
+    endpoint = provider_endpoint(provider.base_url, provider.wire_api)
+    if provider.wire_api == "chat_completions":
+        body = {
+            "model": profile.model,
+            "messages": [
+                {"role": "system", "content": "You are assisting ForgeTrend. Return concise, directly usable text. Never include secrets."},
+                {"role": "user", "content": payload.prompt},
+            ],
+            "max_tokens": payload.max_output_tokens,
+        }
+    else:
+        body = {
+            "model": profile.model,
+            "input": payload.prompt,
+            "max_output_tokens": payload.max_output_tokens,
+            "store": not profile.disable_response_storage,
+        }
+    request = urllib.request.Request(
+        endpoint,
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {raw_key}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            response_payload = json.loads(response.read().decode("utf-8"))
+        text = extract_provider_text(response_payload, provider.wire_api)
+        api_key.last_used_at = datetime.now(UTC)
+        db.commit()
+        return ProviderCompletionResponse(
+            status="completed" if text else "empty",
+            provider=provider.name,
+            model=profile.model,
+            text=redact(text) or "",
+            detail="Provider completion succeeded; secrets were redacted.",
+            tokens_estimated=max(1, len(payload.prompt.split()) + len((text or "").split())),
+        )
+    except Exception as exc:
+        return ProviderCompletionResponse(status="failed", provider=provider.name, model=profile.model, text="", detail=redact(str(exc)) or "Provider completion failed", tokens_estimated=max(1, len(payload.prompt.split())))
 
 
 @app.get("/providers/status", response_model=list[ProviderStatus])
@@ -755,7 +2133,23 @@ def update_factory_state(payload: FactoryStatePatch, db: Session = Depends(get_d
 
 @app.post("/factory-briefs", response_model=FactoryBriefRead)
 def create_factory_brief(payload: FactoryBriefCreate, db: Session = Depends(get_db)) -> FactoryBrief:
-    item = FactoryBrief(**payload.model_dump(), status="draft")
+    seed_builtin_skill_packs(db)
+    seed_run_profiles(db)
+    data = payload.model_dump()
+    run_profile_slug = data.get("run_profile_slug")
+    profile: ConfigProfile | None = None
+    if data.get("config_profile_id"):
+        profile = get_or_404(db, ConfigProfile, data["config_profile_id"])
+    elif run_profile_slug:
+        run_profile = db.scalar(select(RunProfile).where(RunProfile.slug == run_profile_slug, RunProfile.enabled.is_(True)))
+        if run_profile and run_profile.config_profile_id:
+            profile = db.get(ConfigProfile, run_profile.config_profile_id)
+        if run_profile:
+            data["quality_threshold"] = run_profile.quality_threshold
+    profile = profile or seed_default_config_profile(db)
+    data["config_profile_id"] = profile.id
+    data["runtime_config_snapshot_json"] = runtime_config_snapshot(db, profile)
+    item = FactoryBrief(**data, status="draft")
     db.add(item)
     db.flush()
     factory_brief_event(
@@ -764,7 +2158,13 @@ def create_factory_brief(payload: FactoryBriefCreate, db: Session = Depends(get_
         level="info",
         title="brief_created",
         message=f"{item.title} is ready to start.",
-        metadata_json={"step": "brief_created"},
+        metadata_json={
+            "step": "brief_created",
+            "config_profile_id": str(profile.id),
+            "config_profile_name": profile.name,
+            "run_profile_slug": run_profile_slug,
+            "model": item.runtime_config_snapshot_json.get("model"),
+        },
     )
     db.commit()
     db.refresh(item)

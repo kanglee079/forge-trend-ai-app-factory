@@ -54,6 +54,36 @@ await check("API keys endpoint", async () => {
   return `${body.length} key(s)`;
 });
 
+await check("Config profiles endpoint", async () => {
+  const body = await fetchJson("/config-profiles");
+  return `${body.length} profile(s)`;
+});
+
+await check("Runtime config endpoint", async () => {
+  const body = await fetchJson("/config-profiles/default/runtime");
+  return `${body.profile_name} / ${body.model}`;
+});
+
+await check("Skill packs endpoint", async () => {
+  const body = await fetchJson("/skill-packs");
+  return `${body.length} skill(s)`;
+});
+
+await check("Run profiles endpoint", async () => {
+  const body = await fetchJson("/run-profiles");
+  return `${body.length} run profile(s)`;
+});
+
+await check("Prompt context endpoint", async () => {
+  const body = await fetchJson("/prompt-context/summary");
+  return `${body.prompt_fragments.length} fragment(s), ${body.context_packs.length} pack(s)`;
+});
+
+await check("Learning rules endpoint", async () => {
+  const body = await fetchJson("/learning/rules");
+  return `${body.length} rule(s)`;
+});
+
 await check("Ideas endpoint", async () => {
   const body = await fetchJson("/ideas");
   return `${body.length} idea(s)`;

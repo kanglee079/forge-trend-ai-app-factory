@@ -1,0 +1,11 @@
+name = "ASO Listing"
+slug = "aso_listing"
+category = "store_assets"
+version = "1.0.0"
+description = "Draft safe store listing text for human review."
+token_budget = 1400
+
+[prompts.listing_draft]
+purpose = "Draft store listing"
+when_to_use = "When store assets are generated"
+token_budget = 650

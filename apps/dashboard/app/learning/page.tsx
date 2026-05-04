@@ -2,20 +2,23 @@
 
 import { useEffect, useState } from "react";
 import { Loader2, RefreshCw } from "lucide-react";
-import { api, ApiError, LearningSummary } from "@/lib/api";
+import { api, ApiError, LearningRule, LearningSummary } from "@/lib/api";
 import { useLanguage } from "@/lib/i18n";
 import { Badge, Button, Card, Notice, PageHeader, Table, Td, Th } from "@/components/ui";
 
 export default function LearningPage() {
   const { t } = useLanguage();
   const [summary, setSummary] = useState<LearningSummary | null>(null);
+  const [rules, setRules] = useState<LearningRule[]>([]);
   const [loading, setLoading] = useState(true);
-  const [notice, setNotice] = useState<{ tone: "danger"; message: string } | null>(null);
+  const [notice, setNotice] = useState<{ tone: "success" | "danger"; message: string } | null>(null);
 
   async function load() {
     setLoading(true);
     try {
-      setSummary(await api.learningSummary());
+      const [learningSummary, learningRules] = await Promise.all([api.learningSummary(), api.learningRules().catch(() => [])]);
+      setSummary(learningSummary);
+      setRules(learningRules);
     } catch (error) {
       setNotice({ tone: "danger", message: error instanceof ApiError ? error.detail : "Không tải được learning memory." });
     } finally {
@@ -24,6 +27,17 @@ export default function LearningPage() {
   }
 
   useEffect(() => { load().catch(console.error); }, []);
+
+  async function toggleRule(rule: LearningRule) {
+    try {
+      const updated = await api.updateLearningRule(rule.id, { enabled: !rule.enabled });
+      setRules((current) => current.map((item) => item.id === updated.id ? updated : item));
+      setNotice({ tone: "success", message: `${updated.rule_key} đã ${updated.enabled ? "bật" : "tắt"}.` });
+      setSummary(await api.learningSummary());
+    } catch (error) {
+      setNotice({ tone: "danger", message: error instanceof ApiError ? error.detail : "Không cập nhật được learning rule." });
+    }
+  }
 
   return (
     <>
@@ -42,7 +56,28 @@ export default function LearningPage() {
         </Card>
         <Card>
           <h2 className="mb-3 text-base font-semibold">Learning rules đang bật</h2>
-          <div className="space-y-3">{summary?.active_rules.map((rule) => <div key={rule.rule_key} className="rounded-md border border-border bg-background p-3"><div className="mb-1 flex items-center gap-2"><Badge>{rule.rule_key}</Badge><Badge tone="success">{rule.confidence_score}</Badge></div><p className="text-sm text-muted-foreground">{rule.description}</p></div>)}{!summary?.active_rules.length ? <p className="text-sm text-muted-foreground">Chưa có rule nào. Chạy thêm pipeline để ForgeTrend học từ kết quả.</p> : null}</div>
+          <div className="space-y-3">
+            {rules.map((rule) => (
+              <div key={rule.id} className="rounded-md border border-border bg-background p-3">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge>{rule.rule_key}</Badge>
+                    <Badge tone={rule.enabled ? "success" : "warning"}>{rule.enabled ? "enabled" : "disabled"}</Badge>
+                    <Badge>{rule.confidence_score}</Badge>
+                  </div>
+                  <Button type="button" variant="secondary" onClick={() => toggleRule(rule)}>
+                    {rule.enabled ? "Tắt rule" : "Bật rule"}
+                  </Button>
+                </div>
+                <p className="text-sm text-muted-foreground">{rule.description}</p>
+                <details className="mt-2 text-xs text-muted-foreground">
+                  <summary>Trigger/action JSON</summary>
+                  <pre className="mt-2 overflow-auto rounded-md bg-muted p-2">{JSON.stringify({ trigger: rule.trigger_json, action: rule.action_json }, null, 2)}</pre>
+                </details>
+              </div>
+            ))}
+            {!rules.length ? <p className="text-sm text-muted-foreground">Chưa có rule nào. Chạy thêm pipeline để ForgeTrend học từ kết quả.</p> : null}
+          </div>
         </Card>
       </div>
     </>

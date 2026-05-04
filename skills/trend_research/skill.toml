@@ -1,0 +1,11 @@
+name = "Trend Research"
+slug = "trend_research"
+category = "research"
+version = "1.0.0"
+description = "Score app opportunities without creating clone or spam apps."
+token_budget = 2400
+
+[prompts.score_opportunity]
+purpose = "Score opportunity candidates"
+when_to_use = "During auto_trend and candidate scoring"
+token_budget = 850

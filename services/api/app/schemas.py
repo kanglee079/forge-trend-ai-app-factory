@@ -101,6 +101,172 @@ class AppSettingsPatch(BaseModel):
     feature_flags: dict[str, bool] | None = None
 
 
+class ProviderProfileCreate(BaseModel):
+    name: str = "OpenAI"
+    provider_type: str = "openai_compatible"
+    base_url: str = "https://api.openai.com/v1"
+    wire_api: str = "responses"
+    requires_openai_auth: bool = True
+    api_key_id: UUID | None = None
+    enabled: bool = True
+
+
+class ProviderProfilePatch(BaseModel):
+    name: str | None = None
+    provider_type: str | None = None
+    base_url: str | None = None
+    wire_api: str | None = None
+    requires_openai_auth: bool | None = None
+    api_key_id: UUID | None = None
+    enabled: bool | None = None
+
+
+class ProviderProfileRead(ApiModel):
+    id: UUID
+    config_profile_id: UUID
+    name: str
+    provider_type: str
+    base_url: str
+    wire_api: str
+    requires_openai_auth: bool
+    api_key_id: UUID | None
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConfigPluginCreate(BaseModel):
+    plugin_id: str
+    name: str
+    category: str = "plugin"
+    enabled: bool = True
+    source_type: str = "builtin"
+    source: str = ""
+    version: str = "1.0.0"
+
+
+class ConfigPluginPatch(BaseModel):
+    name: str | None = None
+    category: str | None = None
+    enabled: bool | None = None
+    source_type: str | None = None
+    source: str | None = None
+    version: str | None = None
+
+
+class ConfigPluginRead(ApiModel):
+    id: UUID
+    config_profile_id: UUID
+    plugin_id: str
+    name: str
+    category: str
+    enabled: bool
+    source_type: str
+    source: str
+    version: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class TrustedProjectCreate(BaseModel):
+    path: str
+    trust_level: str = "trusted"
+
+
+class TrustedProjectPatch(BaseModel):
+    path: str | None = None
+    trust_level: str | None = None
+
+
+class TrustedProjectRead(ApiModel):
+    id: UUID
+    config_profile_id: UUID
+    path: str
+    trust_level: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConfigProfileCreate(BaseModel):
+    name: str
+    description: str = ""
+    is_default: bool = False
+    model_provider: str = "OpenAI"
+    model: str = "gpt-5.5"
+    review_model: str = "gpt-5.5"
+    model_reasoning_effort: str = "medium"
+    disable_response_storage: bool = False
+    network_access: str = "disabled"
+    model_context_window: int = Field(default=200000, ge=1000)
+    model_auto_compact_token_limit: int = Field(default=160000, ge=1000)
+    active_provider_profile_id: UUID | None = None
+
+
+class ConfigProfilePatch(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    is_default: bool | None = None
+    model_provider: str | None = None
+    model: str | None = None
+    review_model: str | None = None
+    model_reasoning_effort: str | None = None
+    disable_response_storage: bool | None = None
+    network_access: str | None = None
+    model_context_window: int | None = Field(default=None, ge=1000)
+    model_auto_compact_token_limit: int | None = Field(default=None, ge=1000)
+    active_provider_profile_id: UUID | None = None
+
+
+class ConfigProfileRead(ApiModel):
+    id: UUID
+    name: str
+    description: str
+    is_default: bool
+    model_provider: str
+    model: str
+    review_model: str
+    model_reasoning_effort: str
+    disable_response_storage: bool
+    network_access: str
+    model_context_window: int
+    model_auto_compact_token_limit: int
+    active_provider_profile_id: UUID | None
+    created_at: datetime
+    updated_at: datetime
+    providers: list[ProviderProfileRead] = Field(default_factory=list)
+    plugins: list[ConfigPluginRead] = Field(default_factory=list)
+    trusted_projects: list[TrustedProjectRead] = Field(default_factory=list)
+
+
+class ConfigProfileImportPayload(BaseModel):
+    toml_text: str = Field(min_length=1)
+    name: str | None = None
+    set_default: bool = False
+
+
+class ConfigProfileExportResponse(BaseModel):
+    config_profile_id: UUID
+    toml_text: str
+
+
+class RuntimeConfigResponse(BaseModel):
+    config_profile_id: UUID | None
+    profile_name: str
+    model_provider: str
+    model: str
+    review_model: str
+    model_reasoning_effort: str
+    disable_response_storage: bool
+    network_access: str
+    model_context_window: int
+    model_auto_compact_token_limit: int
+    provider: dict = Field(default_factory=dict)
+    enabled_plugins: list[dict] = Field(default_factory=list)
+    enabled_skills: list[dict] = Field(default_factory=list)
+    trusted_projects: list[dict] = Field(default_factory=list)
+    secrets_redacted: bool = True
+
+
 class ApiKeyCreate(BaseModel):
     provider: str
     label: str
@@ -213,6 +379,8 @@ class ProjectRead(ApiModel):
 
 
 class FactoryBriefCreate(BaseModel):
+    config_profile_id: UUID | None = None
+    run_profile_slug: str | None = None
     mode: str = "manual_idea"
     title: str
     raw_prompt: str
@@ -251,6 +419,9 @@ class FactoryBriefEventCreate(BaseModel):
 
 class FactoryBriefRead(ApiModel):
     id: UUID
+    config_profile_id: UUID | None
+    runtime_config_snapshot_json: dict = Field(default_factory=dict)
+    run_profile_slug: str | None
     mode: str
     title: str
     raw_prompt: str
@@ -591,6 +762,14 @@ class LearningRuleRead(ApiModel):
     updated_at: datetime
 
 
+class LearningRulePatch(BaseModel):
+    description: str | None = None
+    enabled: bool | None = None
+    confidence_score: int | None = Field(default=None, ge=0, le=100)
+    trigger_json: dict | None = None
+    action_json: dict | None = None
+
+
 class LearningSummary(BaseModel):
     average_quality_score: float
     total_runs: int
@@ -600,6 +779,157 @@ class LearningSummary(BaseModel):
     active_rules: list[LearningRuleRead]
     provider_success: dict[str, dict[str, int]]
     archetype_scores: dict[str, float]
+
+
+class SkillPromptRead(ApiModel):
+    id: UUID
+    skill_pack_id: UUID
+    name: str
+    purpose: str
+    when_to_use: str
+    prompt_template: str
+    input_schema_json: dict
+    output_schema_json: dict
+    success_criteria_json: dict
+    token_budget: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class SkillPackPatch(BaseModel):
+    enabled: bool | None = None
+    quality_score: int | None = Field(default=None, ge=0, le=100)
+    token_budget: int | None = Field(default=None, ge=0)
+
+
+class SkillPackRead(ApiModel):
+    id: UUID
+    name: str
+    slug: str
+    category: str
+    description: str
+    version: str
+    enabled: bool
+    source_type: str
+    source_url: str | None
+    local_path: str | None
+    quality_score: int
+    token_budget: int
+    created_at: datetime
+    updated_at: datetime
+    prompts: list[SkillPromptRead] = Field(default_factory=list)
+    score: dict = Field(default_factory=dict)
+
+
+class SkillTestPayload(BaseModel):
+    sample_input: dict = Field(default_factory=dict)
+
+
+class SkillTestResponse(BaseModel):
+    skill_pack_id: UUID
+    rendered_prompt: str
+    estimated_tokens: int
+
+
+class SourceScanCreate(BaseModel):
+    source_type: str = "github_search"
+    query: str
+    limit: int = Field(default=5, ge=1, le=10)
+
+
+class SourceScanRunRead(ApiModel):
+    id: UUID
+    source_type: str
+    query: str
+    status: str
+    summary: str
+    created_at: datetime
+    finished_at: datetime | None
+
+
+class SourceItemPatch(BaseModel):
+    status: str | None = None
+    usefulness_score: int | None = Field(default=None, ge=0, le=100)
+
+
+class SourceItemRead(ApiModel):
+    id: UUID
+    scan_run_id: UUID | None
+    title: str
+    source_type: str
+    source_url: str | None
+    summary: str
+    category: str | None
+    usefulness_score: int
+    status: str
+    metadata_json: dict
+    created_at: datetime
+    updated_at: datetime
+
+
+class ScanRunDetail(SourceScanRunRead):
+    items: list[SourceItemRead] = Field(default_factory=list)
+
+
+class RunProfileRead(ApiModel):
+    id: UUID
+    name: str
+    slug: str
+    description: str
+    config_profile_id: UUID | None
+    skill_slugs: list[str]
+    token_budget: int
+    quality_threshold: int
+    max_iterations: int
+    research_mode: str
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class PromptContextSummary(BaseModel):
+    prompt_fragments: list[dict] = Field(default_factory=list)
+    context_packs: list[dict] = Field(default_factory=list)
+    token_budget_decision: dict = Field(default_factory=dict)
+
+
+class ContextPackCreate(BaseModel):
+    project_id: UUID | None = None
+    factory_brief_id: UUID | None = None
+    pack_type: str
+    full_text_hash: str = ""
+    summary: str
+    important_files: list[str] = Field(default_factory=list)
+    token_estimate: int = 0
+
+
+class ContextPackRead(ApiModel):
+    id: UUID
+    project_id: UUID | None
+    factory_brief_id: UUID | None
+    pack_type: str
+    full_text_hash: str
+    summary: str
+    important_files: list
+    token_estimate: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProviderCompletionRequest(BaseModel):
+    config_profile_id: UUID | None = None
+    purpose: str = "agent_assist"
+    prompt: str
+    max_output_tokens: int = Field(default=1200, ge=16, le=8000)
+
+
+class ProviderCompletionResponse(BaseModel):
+    status: str
+    provider: str
+    model: str
+    text: str
+    detail: str
+    tokens_estimated: int = 0
 
 
 class ProviderStatus(BaseModel):

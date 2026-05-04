@@ -1,0 +1,11 @@
+name = "IAP Subscription Placeholder"
+slug = "iap_subscription_placeholder"
+category = "monetization"
+version = "1.0.0"
+description = "Generate safe simulated billing flows."
+token_budget = 1300
+
+[prompts.billing_placeholder]
+purpose = "Design simulated IAP/subscription placeholder"
+when_to_use = "When monetization is iap, subscription, freemium, or hybrid"
+token_budget = 500

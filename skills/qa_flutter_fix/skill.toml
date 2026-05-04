@@ -1,0 +1,11 @@
+name = "QA Flutter Fix"
+slug = "qa_flutter_fix"
+category = "qa"
+version = "1.0.0"
+description = "Repair Flutter pub get, analyze, test, and build failures."
+token_budget = 2200
+
+[prompts.fix_flutter_failure]
+purpose = "Repair Flutter QA failure"
+when_to_use = "When qa_agent returns a failed command"
+token_budget = 1000

@@ -1,0 +1,11 @@
+name = "App Store Readiness"
+slug = "app_store_readiness"
+category = "store_readiness"
+version = "1.0.0"
+description = "Check whether a candidate is ready for internal human testing."
+token_budget = 1800
+
+[prompts.readiness_check]
+purpose = "Check internal test readiness"
+when_to_use = "After QA and quality gate"
+token_budget = 700

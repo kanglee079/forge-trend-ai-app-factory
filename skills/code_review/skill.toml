@@ -1,0 +1,11 @@
+name = "Code Review"
+slug = "code_review"
+category = "qa"
+version = "1.0.0"
+description = "Review generated app changes for defects and regressions."
+token_budget = 1800
+
+[prompts.review_patch]
+purpose = "Review generated source"
+when_to_use = "After code changes and before quality gate"
+token_budget = 700

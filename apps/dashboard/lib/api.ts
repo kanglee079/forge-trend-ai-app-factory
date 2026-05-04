@@ -74,6 +74,82 @@ export type AppSettings = {
   updated_at: string;
 };
 
+export type ProviderProfile = {
+  id: string;
+  config_profile_id: string;
+  name: string;
+  provider_type: string;
+  base_url: string;
+  wire_api: string;
+  requires_openai_auth: boolean;
+  api_key_id: string | null;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ConfigPlugin = {
+  id: string;
+  config_profile_id: string;
+  plugin_id: string;
+  name: string;
+  category: string;
+  enabled: boolean;
+  source_type: string;
+  source: string;
+  version: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TrustedProject = {
+  id: string;
+  config_profile_id: string;
+  path: string;
+  trust_level: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ConfigProfile = {
+  id: string;
+  name: string;
+  description: string;
+  is_default: boolean;
+  model_provider: string;
+  model: string;
+  review_model: string;
+  model_reasoning_effort: string;
+  disable_response_storage: boolean;
+  network_access: string;
+  model_context_window: number;
+  model_auto_compact_token_limit: number;
+  active_provider_profile_id: string | null;
+  created_at: string;
+  updated_at: string;
+  providers: ProviderProfile[];
+  plugins: ConfigPlugin[];
+  trusted_projects: TrustedProject[];
+};
+
+export type RuntimeConfig = {
+  config_profile_id: string | null;
+  profile_name: string;
+  model_provider: string;
+  model: string;
+  review_model: string;
+  model_reasoning_effort: string;
+  disable_response_storage: boolean;
+  network_access: string;
+  model_context_window: number;
+  model_auto_compact_token_limit: number;
+  provider: Record<string, unknown>;
+  enabled_plugins: Array<Record<string, unknown>>;
+  enabled_skills: Array<Record<string, unknown>>;
+  trusted_projects: Array<Record<string, unknown>>;
+  secrets_redacted: boolean;
+};
+
 export type Worker = {
   id: string;
   machine_name: string;
@@ -159,6 +235,9 @@ export type OpportunityCandidate = {
 
 export type FactoryBrief = {
   id: string;
+  config_profile_id: string | null;
+  runtime_config_snapshot_json: Record<string, unknown>;
+  run_profile_slug: string | null;
   mode: string;
   title: string;
   raw_prompt: string;
@@ -303,6 +382,95 @@ export type LearningSummary = {
   archetype_scores: Record<string, number>;
 };
 
+export type LearningRule = {
+  id: string;
+  rule_key: string;
+  description: string;
+  enabled: boolean;
+  confidence_score: number;
+  trigger_json: Record<string, unknown>;
+  action_json: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SkillPrompt = {
+  id: string;
+  skill_pack_id: string;
+  name: string;
+  purpose: string;
+  when_to_use: string;
+  prompt_template: string;
+  input_schema_json: Record<string, unknown>;
+  output_schema_json: Record<string, unknown>;
+  success_criteria_json: Record<string, unknown>;
+  token_budget: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SkillPack = {
+  id: string;
+  name: string;
+  slug: string;
+  category: string;
+  description: string;
+  version: string;
+  enabled: boolean;
+  source_type: string;
+  source_url: string | null;
+  local_path: string | null;
+  quality_score: number;
+  token_budget: number;
+  created_at: string;
+  updated_at: string;
+  prompts: SkillPrompt[];
+  score: Record<string, unknown>;
+};
+
+export type RunProfile = {
+  id: string;
+  name: string;
+  slug: string;
+  description: string;
+  config_profile_id: string | null;
+  skill_slugs: string[];
+  token_budget: number;
+  quality_threshold: number;
+  max_iterations: number;
+  research_mode: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SourceScanRun = {
+  id: string;
+  source_type: string;
+  query: string;
+  status: string;
+  summary: string;
+  created_at: string;
+  finished_at: string | null;
+};
+
+export type SourceItem = {
+  id: string;
+  scan_run_id: string | null;
+  title: string;
+  source_type: string;
+  source_url: string | null;
+  summary: string;
+  category: string | null;
+  usefulness_score: number;
+  status: string;
+  metadata_json: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ScanRunDetail = SourceScanRun & { items: SourceItem[] };
+
 export class ApiError extends Error {
   status: number;
   detail: string;
@@ -354,6 +522,25 @@ export const api = {
   doctor: () => request<DoctorResponse>("/doctor"),
   settings: () => request<AppSettings>("/settings"),
   updateSettings: (body: unknown) => request<AppSettings>("/settings", { method: "PATCH", body: JSON.stringify(body) }),
+  configProfiles: () => request<ConfigProfile[]>("/config-profiles"),
+  configProfile: (id: string) => request<ConfigProfile>(`/config-profiles/${id}`),
+  createConfigProfile: (body: unknown) => request<ConfigProfile>("/config-profiles", { method: "POST", body: JSON.stringify(body) }),
+  updateConfigProfile: (id: string, body: unknown) => request<ConfigProfile>(`/config-profiles/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteConfigProfile: (id: string) => request<ActionResponse>(`/config-profiles/${id}`, { method: "DELETE" }),
+  setDefaultConfigProfile: (id: string) => request<ConfigProfile>(`/config-profiles/${id}/set-default`, { method: "POST" }),
+  importConfigToml: (body: unknown) => request<ConfigProfile>("/config-profiles/import-toml", { method: "POST", body: JSON.stringify(body) }),
+  exportConfigToml: (id: string) => request<{ config_profile_id: string; toml_text: string }>(`/config-profiles/${id}/export-toml`),
+  testConfigProfile: (id: string) => request<ActionResponse>(`/config-profiles/${id}/test`, { method: "POST" }),
+  runtimeConfig: (id?: string) => request<RuntimeConfig>(id ? `/config-profiles/${id}/runtime` : "/config-profiles/default/runtime"),
+  createProviderProfile: (profileId: string, body: unknown) => request<ProviderProfile>(`/config-profiles/${profileId}/provider-profiles`, { method: "POST", body: JSON.stringify(body) }),
+  updateProviderProfile: (id: string, body: unknown) => request<ProviderProfile>(`/provider-profiles/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteProviderProfile: (id: string) => request<ActionResponse>(`/provider-profiles/${id}`, { method: "DELETE" }),
+  createConfigPlugin: (profileId: string, body: unknown) => request<ConfigPlugin>(`/config-profiles/${profileId}/plugins`, { method: "POST", body: JSON.stringify(body) }),
+  updateConfigPlugin: (id: string, body: unknown) => request<ConfigPlugin>(`/config-plugins/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteConfigPlugin: (id: string) => request<ActionResponse>(`/config-plugins/${id}`, { method: "DELETE" }),
+  createTrustedProject: (profileId: string, body: unknown) => request<TrustedProject>(`/config-profiles/${profileId}/trusted-projects`, { method: "POST", body: JSON.stringify(body) }),
+  updateTrustedProject: (id: string, body: unknown) => request<TrustedProject>(`/trusted-projects/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteTrustedProject: (id: string) => request<ActionResponse>(`/trusted-projects/${id}`, { method: "DELETE" }),
   factoryState: () => request<FactoryState>("/factory/state"),
   updateFactoryState: (mode: FactoryState["mode"]) => request<FactoryState>("/factory/state", { method: "PATCH", body: JSON.stringify({ mode }) }),
   factoryBriefs: () => request<FactoryBrief[]>("/factory-briefs"),
@@ -406,6 +593,19 @@ export const api = {
   pluginRegistry: () => request<PluginStatus[]>("/plugins/registry"),
   queueSummary: () => request<QueueSummary>("/queues/summary"),
   learningSummary: () => request<LearningSummary>("/learning/summary"),
+  learningRules: () => request<LearningRule[]>("/learning/rules"),
+  updateLearningRule: (id: string, body: unknown) => request<LearningRule>(`/learning/rules/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  skillPacks: () => request<SkillPack[]>("/skill-packs"),
+  scanInstalledSkills: () => request<SkillPack[]>("/skill-packs/scan-installed", { method: "POST" }),
+  updateSkillPack: (id: string, body: unknown) => request<SkillPack>(`/skill-packs/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  testSkillPack: (id: string, body: unknown) => request<{ skill_pack_id: string; rendered_prompt: string; estimated_tokens: number }>(`/skill-packs/${id}/test`, { method: "POST", body: JSON.stringify(body) }),
+  runProfiles: () => request<RunProfile[]>("/run-profiles"),
+  createScanRun: (body: unknown) => request<ScanRunDetail>("/scan/runs", { method: "POST", body: JSON.stringify(body) }),
+  scanRuns: () => request<SourceScanRun[]>("/scan/runs"),
+  sourceItems: (status?: string) => request<SourceItem[]>(`/source-items${status ? `?status=${encodeURIComponent(status)}` : ""}`),
+  updateSourceItem: (id: string, body: unknown) => request<SourceItem>(`/source-items/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  convertSourceItemToSkill: (id: string) => request<SkillPack>(`/source-items/${id}/convert-to-skill`, { method: "POST" }),
+  promptContextSummary: () => request<{ prompt_fragments: Array<Record<string, unknown>>; context_packs: Array<Record<string, unknown>>; token_budget_decision: Record<string, unknown> }>("/prompt-context/summary"),
   notifications: (limit = 50) => request<Notification[]>(`/notifications?limit=${limit}`),
   markNotificationRead: (id: string) => request<Notification>(`/notifications/${id}/read`, { method: "POST" }),
   markAllNotificationsRead: () => request<ActionResponse>("/notifications/read-all", { method: "POST" })

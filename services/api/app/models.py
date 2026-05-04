@@ -260,6 +260,9 @@ class FactoryBrief(Base):
     __tablename__ = "factory_briefs"
 
     id: Mapped[uuid.UUID] = uuid_pk()
+    config_profile_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("config_profiles.id"), nullable=True)
+    runtime_config_snapshot_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    run_profile_slug: Mapped[str] = mapped_column(String(120), nullable=True)
     mode: Mapped[str] = mapped_column(String(80))
     title: Mapped[str] = mapped_column(String(255))
     raw_prompt: Mapped[str] = mapped_column(Text)
@@ -280,6 +283,245 @@ class FactoryBrief(Base):
     status: Mapped[str] = mapped_column(String(80), default="draft")
     selected_idea_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("ideas.id"), nullable=True)
     selected_project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ConfigProfile(Base):
+    __tablename__ = "config_profiles"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str] = mapped_column(Text, default="")
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    model_provider: Mapped[str] = mapped_column(String(120), default="OpenAI")
+    model: Mapped[str] = mapped_column(String(160), default="gpt-5.5")
+    review_model: Mapped[str] = mapped_column(String(160), default="gpt-5.5")
+    model_reasoning_effort: Mapped[str] = mapped_column(String(40), default="medium")
+    disable_response_storage: Mapped[bool] = mapped_column(Boolean, default=False)
+    network_access: Mapped[str] = mapped_column(String(40), default="disabled")
+    model_context_window: Mapped[int] = mapped_column(Integer, default=200000)
+    model_auto_compact_token_limit: Mapped[int] = mapped_column(Integer, default=160000)
+    active_provider_profile_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ProviderProfile(Base):
+    __tablename__ = "provider_profiles"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    config_profile_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("config_profiles.id"))
+    name: Mapped[str] = mapped_column(String(255))
+    provider_type: Mapped[str] = mapped_column(String(120), default="openai_compatible")
+    base_url: Mapped[str] = mapped_column(String(512), default="https://api.openai.com/v1")
+    wire_api: Mapped[str] = mapped_column(String(80), default="responses")
+    requires_openai_auth: Mapped[bool] = mapped_column(Boolean, default=True)
+    api_key_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("api_keys.id"), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ConfigPlugin(Base):
+    __tablename__ = "config_plugins"
+    __table_args__ = (UniqueConstraint("config_profile_id", "plugin_id", name="uq_config_plugins_profile_plugin"),)
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    config_profile_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("config_profiles.id"))
+    plugin_id: Mapped[str] = mapped_column(String(160))
+    name: Mapped[str] = mapped_column(String(255))
+    category: Mapped[str] = mapped_column(String(120), default="plugin")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    source_type: Mapped[str] = mapped_column(String(80), default="builtin")
+    source: Mapped[str] = mapped_column(String(512), default="")
+    version: Mapped[str] = mapped_column(String(80), default="1.0.0")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class TrustedProject(Base):
+    __tablename__ = "trusted_projects"
+    __table_args__ = (UniqueConstraint("config_profile_id", "path", name="uq_trusted_projects_profile_path"),)
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    config_profile_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("config_profiles.id"))
+    path: Mapped[str] = mapped_column(String(1024))
+    trust_level: Mapped[str] = mapped_column(String(80), default="trusted")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class SkillPack(Base):
+    __tablename__ = "skill_packs"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    name: Mapped[str] = mapped_column(String(255))
+    slug: Mapped[str] = mapped_column(String(160), unique=True)
+    category: Mapped[str] = mapped_column(String(120))
+    description: Mapped[str] = mapped_column(Text, default="")
+    version: Mapped[str] = mapped_column(String(80), default="1.0.0")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    source_type: Mapped[str] = mapped_column(String(80), default="builtin")
+    source_url: Mapped[str] = mapped_column(String(512), nullable=True)
+    local_path: Mapped[str] = mapped_column(String(512), nullable=True)
+    quality_score: Mapped[int] = mapped_column(Integer, default=70)
+    token_budget: Mapped[int] = mapped_column(Integer, default=3000)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class SkillPrompt(Base):
+    __tablename__ = "skill_prompts"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    skill_pack_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("skill_packs.id"))
+    name: Mapped[str] = mapped_column(String(255))
+    purpose: Mapped[str] = mapped_column(Text, default="")
+    when_to_use: Mapped[str] = mapped_column(Text, default="")
+    prompt_template: Mapped[str] = mapped_column(Text)
+    input_schema_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    output_schema_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    success_criteria_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    token_budget: Mapped[int] = mapped_column(Integer, default=1000)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class SkillRun(Base):
+    __tablename__ = "skill_runs"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    skill_pack_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("skill_packs.id"))
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=True)
+    factory_brief_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("factory_briefs.id"), nullable=True)
+    agent_name: Mapped[str] = mapped_column(String(120))
+    input_hash: Mapped[str] = mapped_column(String(120), default="")
+    output_summary: Mapped[str] = mapped_column(Text, default="")
+    tokens_estimated: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(80), default="planned")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SkillScore(Base):
+    __tablename__ = "skill_scores"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    skill_pack_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("skill_packs.id"), unique=True)
+    success_count: Mapped[int] = mapped_column(Integer, default=0)
+    failure_count: Mapped[int] = mapped_column(Integer, default=0)
+    avg_quality_delta: Mapped[int] = mapped_column(Integer, default=0)
+    avg_tokens_saved: Mapped[int] = mapped_column(Integer, default=0)
+    last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SourceRegistry(Base):
+    __tablename__ = "source_registries"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    name: Mapped[str] = mapped_column(String(255))
+    source_type: Mapped[str] = mapped_column(String(80))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    config_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class SourceScanRun(Base):
+    __tablename__ = "source_scan_runs"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    source_type: Mapped[str] = mapped_column(String(80))
+    query: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(80), default="completed")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SourceItem(Base):
+    __tablename__ = "source_items"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    scan_run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("source_scan_runs.id"), nullable=True)
+    title: Mapped[str] = mapped_column(String(255))
+    source_type: Mapped[str] = mapped_column(String(80))
+    source_url: Mapped[str] = mapped_column(String(1024), nullable=True)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    category: Mapped[str] = mapped_column(String(120), nullable=True)
+    usefulness_score: Mapped[int] = mapped_column(Integer, default=50)
+    status: Mapped[str] = mapped_column(String(80), default="quarantined")
+    metadata_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class PromptTemplate(Base):
+    __tablename__ = "prompt_templates"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    slug: Mapped[str] = mapped_column(String(160), unique=True)
+    name: Mapped[str] = mapped_column(String(255))
+    category: Mapped[str] = mapped_column(String(120), default="general")
+    template: Mapped[str] = mapped_column(Text)
+    token_estimate: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class PromptFragment(Base):
+    __tablename__ = "prompt_fragments"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    slug: Mapped[str] = mapped_column(String(160), unique=True)
+    category: Mapped[str] = mapped_column(String(120), default="general")
+    content: Mapped[str] = mapped_column(Text)
+    token_estimate: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class PromptCache(Base):
+    __tablename__ = "prompt_cache"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    cache_key: Mapped[str] = mapped_column(String(160), unique=True)
+    full_text_hash: Mapped[str] = mapped_column(String(160))
+    summary: Mapped[str] = mapped_column(Text)
+    token_estimate: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ContextPack(Base):
+    __tablename__ = "context_packs"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=True)
+    factory_brief_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("factory_briefs.id"), nullable=True)
+    pack_type: Mapped[str] = mapped_column(String(120))
+    full_text_hash: Mapped[str] = mapped_column(String(160), default="")
+    summary: Mapped[str] = mapped_column(Text)
+    important_files: Mapped[list] = mapped_column(JSONB, default=list)
+    token_estimate: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class RunProfile(Base):
+    __tablename__ = "run_profiles"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    name: Mapped[str] = mapped_column(String(255))
+    slug: Mapped[str] = mapped_column(String(160), unique=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    config_profile_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("config_profiles.id"), nullable=True)
+    skill_slugs: Mapped[list] = mapped_column(JSONB, default=list)
+    token_budget: Mapped[int] = mapped_column(Integer, default=20000)
+    quality_threshold: Mapped[int] = mapped_column(Integer, default=75)
+    max_iterations: Mapped[int] = mapped_column(Integer, default=3)
+    research_mode: Mapped[str] = mapped_column(String(80), default="deterministic")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

@@ -2,8 +2,8 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, Play, Sparkles } from "lucide-react";
-import { api, ApiError } from "@/lib/api";
+import { CheckCircle2, Loader2, Play, Sparkles } from "lucide-react";
+import { api, ApiError, ConfigProfile, RunProfile } from "@/lib/api";
 import { useLanguage } from "@/lib/i18n";
 import { Badge, Button, Card, Input, Label, Notice, PageHeader, Select, Textarea } from "@/components/ui";
 
@@ -31,12 +31,16 @@ const initialForm = {
   backend_mode: "offline_first",
   max_cost_usd: "5",
   policy_strictness: "standard",
+  config_profile_id: "",
+  run_profile_slug: "vi_store_test",
 };
 
 export default function CreateAppPage() {
   const router = useRouter();
   const { t } = useLanguage();
   const [form, setForm] = useState(initialForm);
+  const [configProfiles, setConfigProfiles] = useState<ConfigProfile[]>([]);
+  const [runProfiles, setRunProfiles] = useState<RunProfile[]>([]);
   const [showMore, setShowMore] = useState(false);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<{ tone: "success" | "danger" | "warning"; message: string } | null>(null);
@@ -44,6 +48,14 @@ export default function CreateAppPage() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("mode") === "auto_trend") setForm((current) => ({ ...current, mode: "auto_trend" }));
+    Promise.all([api.configProfiles().catch(() => []), api.runProfiles().catch(() => [])])
+      .then(([profiles, runs]) => {
+        setConfigProfiles(profiles);
+        setRunProfiles(runs);
+        const defaultProfile = profiles.find((item) => item.is_default) ?? profiles[0];
+        if (defaultProfile) setForm((current) => ({ ...current, config_profile_id: current.config_profile_id || defaultProfile.id }));
+      })
+      .catch(console.error);
   }, []);
 
   const summaryPrompt = useMemo(() => {
@@ -80,6 +92,8 @@ export default function CreateAppPage() {
       const monetized = form.monetization_mode !== "none";
       const brief = await api.createFactoryBrief({
         mode: form.mode,
+        config_profile_id: form.config_profile_id || null,
+        run_profile_slug: form.run_profile_slug || null,
         title: form.title.trim() || defaultTitle(form.raw_prompt),
         raw_prompt: summaryPrompt,
         target_category: form.target_category,
@@ -151,6 +165,8 @@ export default function CreateAppPage() {
                 <FieldSelect label={t("backendMode")} value={form.backend_mode} onChange={(value) => update("backend_mode", value)} options={[["offline_first", t("offlineFirst")], ["firebase", t("firebasePlaceholder")], ["supabase", t("supabasePlaceholder")], ["none", t("noBackend")]]} />
                 <FieldSelect label={t("complexity")} value={form.complexity} onChange={(value) => update("complexity", value)} options={[["small", t("simple")], ["medium", t("medium")], ["large", t("advanced")]]} />
                 <div><Label>Budget tối đa</Label><Input value={form.max_cost_usd} type="number" min="0" step="0.01" onChange={(event) => update("max_cost_usd", event.target.value)} /></div>
+                <FieldSelect label="Run profile" value={form.run_profile_slug} onChange={(value) => update("run_profile_slug", value)} options={(runProfiles.length ? runProfiles : [{ slug: "vi_store_test", name: "App tiếng Việt để test store" } as RunProfile]).map((item) => [item.slug, item.name])} />
+                <FieldSelect label="Config profile" value={form.config_profile_id} onChange={(value) => update("config_profile_id", value)} options={[["", "Default profile"], ...configProfiles.map((item) => [item.id, item.name])]} />
               </div>
             ) : null}
           </div>
@@ -178,8 +194,22 @@ export default function CreateAppPage() {
               <Summary label={t("appLanguage")} value={form.target_language} />
               <Summary label={t("monetization")} value={form.monetization_mode} />
               <Summary label={t("backendMode")} value={form.backend_mode} />
+              <Summary label="Run profile" value={runProfiles.find((item) => item.slug === form.run_profile_slug)?.name ?? form.run_profile_slug} />
+              <Summary label="Config profile" value={configProfiles.find((item) => item.id === form.config_profile_id)?.name ?? "Default profile"} />
             </div>
             <Notice tone="neutral" className="mt-4 mb-0">{t("humanApprovalRequired")}</Notice>
+          </Card>
+          <Card>
+            <h2 className="mb-3 text-base font-semibold">Sau khi bấm bắt đầu</h2>
+            <div className="space-y-2 text-sm">
+              {["Nghiên cứu ý tưởng", "Chọn hướng app", "Viết PRD", "Tạo thiết kế", "Code Flutter", "Test và sửa lỗi", "Kiểm tra store-readiness", "Xuất APK/source/report"].map((item, index) => (
+                <div key={item} className="flex items-center gap-2 rounded-md border border-border bg-background px-3 py-2">
+                  <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                  <span className="text-muted-foreground">{index + 1}.</span>
+                  <span>{item}</span>
+                </div>
+              ))}
+            </div>
           </Card>
         </div>
       </form>

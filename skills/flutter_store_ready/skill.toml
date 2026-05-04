@@ -1,0 +1,11 @@
+name = "Flutter Store Ready"
+slug = "flutter_store_ready"
+category = "app_generation"
+version = "1.0.0"
+description = "Generate app-specific Flutter flows with QA, policy, privacy, and store-readiness in mind."
+token_budget = 3000
+
+[prompts.build_core_flow]
+purpose = "Generate app-specific core feature flow"
+when_to_use = "Before Flutter code generation"
+token_budget = 1200

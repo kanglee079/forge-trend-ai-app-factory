@@ -1,0 +1,11 @@
+name = "Google Play Policy"
+slug = "google_play_policy"
+category = "policy"
+version = "1.0.0"
+description = "Review app candidates for Play policy and store-readiness blockers."
+token_budget = 2200
+
+[prompts.policy_gate]
+purpose = "Identify release blockers"
+when_to_use = "Before release candidate or when policy risk is high"
+token_budget = 900

@@ -1,0 +1,11 @@
+name = "Privacy Policy"
+slug = "privacy_policy"
+category = "policy"
+version = "1.0.0"
+description = "Draft local-first privacy policy placeholders."
+token_budget = 1100
+
+[prompts.privacy_draft]
+purpose = "Draft privacy policy"
+when_to_use = "When generating store assets or policy gate"
+token_budget = 500

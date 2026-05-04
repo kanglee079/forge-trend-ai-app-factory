@@ -8,12 +8,15 @@ from daemon.api import FactoryApi
 from daemon.autopilot import autopilot_decision, build_run_evaluation
 from daemon.autopilot.policies import MAX_POLICY_FIX_ITERATIONS, MAX_QUALITY_FIX_ITERATIONS
 from daemon.config import settings
+from daemon.config_profile_resolver import config_summary, sanitized_runtime_config
 from daemon.cost_guard import check_cost_limit
+from daemon.prompt_planner import plan_context_pack, skill_prompt_header
 from daemon.provider_adapters import ADAPTERS, ProviderUnavailable, run_codex_cli
 from daemon.quality_gate import build_quality_gate_result, quality_gate_report_markdown, store_readiness_report_markdown
 from daemon.research.providers import build_research_bundle
 from daemon.safety import run_safe
 from daemon.app_archetypes import choose_archetype
+from daemon.skills import select_skills
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -36,6 +39,8 @@ class PipelineContext:
         workspace: Path,
         idea: dict[str, Any] | None,
         tasks: list[dict[str, Any]] | None = None,
+        runtime_config: dict[str, Any] | None = None,
+        selected_skills: list[dict[str, Any]] | None = None,
     ) -> None:
         self.api = api
         self.project = project
@@ -43,6 +48,8 @@ class PipelineContext:
         self.workspace = workspace
         self.idea = idea
         self.tasks_by_agent = {task["agent_name"]: task for task in (tasks or [])}
+        self.runtime_config = runtime_config or {}
+        self.selected_skills = selected_skills or []
 
     @property
     def app_dir(self) -> Path:
@@ -65,6 +72,54 @@ class PipelineContext:
             return
         updated = self.api.update_project_task(task["id"], payload)
         self.tasks_by_agent[agent_name] = updated
+
+    def context_pack(self, pack_type: str, text: str, important_files: list[str] | None = None) -> dict[str, Any]:
+        token_limit = int(self.runtime_config.get("model_auto_compact_token_limit") or 4000)
+        planner_limit = min(max(token_limit // 100, 1500), 6000)
+        pack = plan_context_pack(pack_type=pack_type, text=text, important_files=important_files, token_limit=planner_limit)
+        payload = {
+            "project_id": self.project_id,
+            "factory_brief_id": linked_brief_id(self) or None,
+            "pack_type": pack["pack_type"],
+            "full_text_hash": pack["full_text_hash"],
+            "summary": pack["summary"],
+            "important_files": pack["important_files"],
+            "token_estimate": pack["token_estimate"],
+        }
+        try:
+            self.api.context_pack(payload)
+            self.event("prompt_planner", f"Context pack planned: {pack_type}", metadata_json=pack["decision"])
+        except Exception as exc:
+            self.event("prompt_planner", f"Context pack planning skipped: {pack_type}", level="warning", stderr=str(exc), metadata_json=pack["decision"])
+        return pack
+
+    def provider_text_assist(self, purpose: str, prompt: str, max_output_tokens: int = 1200) -> dict[str, Any]:
+        config_profile_id = self.runtime_config.get("config_profile_id")
+        try:
+            result = self.api.provider_completion(
+                {
+                    "config_profile_id": config_profile_id,
+                    "purpose": purpose,
+                    "prompt": prompt,
+                    "max_output_tokens": max_output_tokens,
+                }
+            )
+            level = "info" if result.get("status") == "completed" else "warning"
+            self.event(
+                "provider_router",
+                f"Provider text assist {result.get('status')}: {purpose}",
+                level=level,
+                metadata_json={
+                    "provider": result.get("provider"),
+                    "model": result.get("model"),
+                    "detail": result.get("detail"),
+                    "tokens_estimated": result.get("tokens_estimated"),
+                },
+            )
+            return result
+        except Exception as exc:
+            self.event("provider_router", f"Provider text assist skipped: {purpose}", level="warning", stderr=str(exc))
+            return {"status": "failed", "text": "", "detail": str(exc)}
 
 
 def write_text(path: Path, content: str) -> None:
@@ -343,6 +398,8 @@ def write_factory_run_report(
     if brief:
         selected_candidate = next((item for item in brief.get("candidates", []) if item.get("id") == candidate_id), None)
         selected_candidate = selected_candidate or next((item for item in brief.get("candidates", []) if item.get("status") == "selected"), None)
+    runtime_config = sanitized_runtime_config(ctx.api, brief)
+    config_info = config_summary(runtime_config)
     code_events = [event for event in events if event.get("step") == "code_agent"]
     codex_event = next((event for event in code_events if event.get("metadata_json", {}).get("provider") == "codex_cli"), None)
     code_task = next((task for task in tasks if task.get("agent_name") == "code_agent"), None)
@@ -356,6 +413,16 @@ def write_factory_run_report(
         f"- Title: {(brief or {}).get('title', ctx.project['name'])}",
         f"- Mode: {(brief or {}).get('mode', 'manual')}",
         f"- Prompt: {(brief or {}).get('raw_prompt', (ctx.idea or {}).get('description', ''))}",
+        "",
+        "## Runtime Config Snapshot",
+        f"- Profile: {config_info.get('profile_name')}",
+        f"- Provider: {config_info.get('model_provider')}",
+        f"- Model: {config_info.get('model')}",
+        f"- Review model: {config_info.get('review_model')}",
+        f"- Network: {config_info.get('network_access')}",
+        f"- Auth mode: {config_info.get('provider_auth_mode')}",
+        f"- Plugins: {', '.join(config_info.get('plugins') or []) or 'none'}",
+        f"- Skills: {', '.join(config_info.get('skills') or []) or 'none'}",
         "",
         "## Selected Candidate",
         f"- Candidate ID: {candidate_id or 'unknown'}",
@@ -451,6 +518,14 @@ def write_factory_run_report(
         "## Kết quả code",
         f"- Provider: {code_provider.get('provider', 'unknown')}",
         "",
+        "## Cấu hình runtime",
+        f"- Profile: {config_info.get('profile_name')}",
+        f"- Model: {config_info.get('model')}",
+        f"- Review model: {config_info.get('review_model')}",
+        f"- Network: {config_info.get('network_access')}",
+        f"- Plugin: {', '.join(config_info.get('plugins') or []) or 'không có'}",
+        f"- Skill: {', '.join(config_info.get('skills') or []) or 'không có'}",
+        "",
         "## Kết quả QA",
         f"- Passed: {(qa_output or {}).get('passed')}",
         "",
@@ -481,13 +556,54 @@ def write_factory_run_report(
 
 def run_factory_brief(api: FactoryApi, brief_id: str) -> None:
     brief = api.get_factory_brief(brief_id)
+    runtime_config = sanitized_runtime_config(api, brief)
+    selected_skills = select_skills(brief=brief, runtime_config=runtime_config)
     try:
         api.factory_brief_event(
             brief_id,
             "worker_picked_brief",
             "A worker picked up this factory brief.",
-            metadata_json={"step": "worker_picked_brief", "mode": brief.get("mode")},
+            metadata_json={"step": "worker_picked_brief", "mode": brief.get("mode"), "config": config_summary(runtime_config)},
         )
+        api.factory_brief_event(
+            brief_id,
+            "skills_selected",
+            "Autopilot selected skills: " + (", ".join(item["slug"] for item in selected_skills) or "none"),
+            metadata_json={"step": "skills_selected", "skills": selected_skills, "config_profile": runtime_config.get("profile_name")},
+        )
+        for skill in selected_skills:
+            try:
+                api.record_skill_run(
+                    {
+                        "skill_slug": skill["slug"],
+                        "factory_brief_id": brief_id,
+                        "agent_name": "autopilot_research",
+                        "output_summary": skill.get("reason", ""),
+                        "tokens_estimated": skill.get("token_budget", 0),
+                        "status": "used",
+                    }
+                )
+            except Exception:
+                pass
+        try:
+            pack = plan_context_pack(
+                pack_type="context_pack_research_brief",
+                text=f"{brief.get('title', '')}\n\n{brief.get('raw_prompt', '')}\n\n{skill_prompt_header(selected_skills)}",
+                important_files=[],
+                token_limit=3000,
+            )
+            api.context_pack(
+                {
+                    "factory_brief_id": brief_id,
+                    "pack_type": pack["pack_type"],
+                    "full_text_hash": pack["full_text_hash"],
+                    "summary": pack["summary"],
+                    "important_files": pack["important_files"],
+                    "token_estimate": pack["token_estimate"],
+                }
+            )
+        except Exception:
+            pass
         api.set_factory_brief_status(brief_id, "researching")
         api.factory_brief_event(
             brief_id,
@@ -601,9 +717,17 @@ def build_codex_prompt(ctx: PipelineContext, iteration: int, qa_error: str | Non
     flow = flow_path.read_text(encoding="utf-8") if flow_path.exists() else ""
     mode = "fix the QA failure" if qa_error else "customize the generated Flutter skeleton"
     error_block = f"\nQA failure to fix:\n```text\n{qa_error[-6000:]}\n```\n" if qa_error else ""
+    context_text = "\n\n".join([prd, design, flow, qa_error or ""])
+    pack = ctx.context_pack(
+        "context_pack_code_agent",
+        context_text,
+        important_files=[str(prd_path), str(design_path), str(flow_path), "app/lib", "app/test"],
+    )
+    skill_header = skill_prompt_header(ctx.selected_skills)
     return f"""You are the ForgeTrend Code Agent running inside a local project workspace.
 
 Task: {mode}.
+{skill_header}
 
 Hard rules:
 - Edit only files under the current workspace.
@@ -632,6 +756,11 @@ Design system:
 Screen flow:
 ```markdown
 {flow[-5000:]}
+```
+
+Compressed context pack:
+```text
+{pack["summary"]}
 ```
 {error_block}
 Finish by summarizing the files you changed. Do not run destructive commands.
@@ -721,12 +850,24 @@ Freemium placeholder with human review before any store release.
 - Policy checklist passes.
 - Human approval remains required before production publishing.
 """
+    assist_prompt = f"""{skill_prompt_header(ctx.selected_skills)}
+
+Create a concise PRD improvement for this app. Keep it original, store-safe, and implementation-ready.
+
+Project: {title}
+Idea: {idea_text}
+
+Return markdown sections for target user, problem, MVP features, risks, and definition of done."""
+    provider_result = ctx.provider_text_assist("prd_agent", assist_prompt, max_output_tokens=1400)
+    if provider_result.get("status") == "completed" and len(str(provider_result.get("text") or "")) > 300:
+        prd = f"{prd}\n\n## Provider Assisted Product Notes\n\n{provider_result['text']}\n"
+    ctx.context_pack("context_pack_prd", prd, important_files=["docs/prd.md"])
     path = ctx.docs_dir / "prd.md"
     write_text(path, prd)
     ctx.api.artifact(ctx.project_id, "document", "prd.md", str(path))
     ctx.event("prd_agent", "PRD generated", metadata_json={"path": str(path)})
     git_commit(ctx, "Generate PRD")
-    return {"prd_path": str(path)}
+    return {"prd_path": str(path), "provider_assist": {"status": provider_result.get("status"), "provider": provider_result.get("provider"), "detail": provider_result.get("detail")}}
 
 
 def ux_agent(ctx: PipelineContext) -> dict[str, Any]:
@@ -767,6 +908,13 @@ Use Material 3 defaults with clear hierarchy and no decorative type.
 - Empty states offer one primary action.
 - Errors describe the failed command or missing dependency.
 """
+    ux_prompt = f"""{skill_prompt_header(ctx.selected_skills)}
+
+Improve the UX plan for {ctx.project["name"]}. Return concise markdown for screens, empty/error/success states, and Vietnamese-first copy notes when relevant."""
+    provider_result = ctx.provider_text_assist("ux_agent", ux_prompt, max_output_tokens=900)
+    if provider_result.get("status") == "completed" and provider_result.get("text"):
+        screen_flow = f"{screen_flow}\n\n## Provider Assisted UX Notes\n\n{provider_result['text']}\n"
+    ctx.context_pack("context_pack_design", f"{design_system}\n\n{screen_flow}", important_files=["docs/design_system.md", "docs/screen_flow.md"])
     design_path = ctx.docs_dir / "design_system.md"
     flow_path = ctx.docs_dir / "screen_flow.md"
     write_text(design_path, design_system)
@@ -775,7 +923,7 @@ Use Material 3 defaults with clear hierarchy and no decorative type.
     ctx.api.artifact(ctx.project_id, "document", "screen_flow.md", str(flow_path))
     ctx.event("ux_agent", "UX documents generated", metadata_json={"design_system": str(design_path), "screen_flow": str(flow_path)})
     git_commit(ctx, "Generate UX documents")
-    return {"design_system_path": str(design_path), "screen_flow_path": str(flow_path)}
+    return {"design_system_path": str(design_path), "screen_flow_path": str(flow_path), "provider_assist": {"status": provider_result.get("status"), "provider": provider_result.get("provider"), "detail": provider_result.get("detail")}}
 
 
 def code_agent(ctx: PipelineContext, iteration: int = 0, qa_error: str | None = None) -> dict[str, Any]:
@@ -1406,14 +1554,18 @@ Review this policy with a human before store submission.
         ctx.event("code_agent", "Recorded QA failure for human-readable fix context", level="warning", metadata_json={"iteration": iteration})
 
     git_commit(ctx, f"Code agent iteration {iteration}")
-    provider_result: dict[str, Any] = {"provider": "deterministic", "skipped_reason": None}
-    if not settings.worker_enable_codex:
+    runtime_provider = (ctx.runtime_config.get("provider") or {})
+    runtime_provider_type = str(runtime_provider.get("provider_type") or "")
+    runtime_auth_mode = str(runtime_provider.get("auth_mode") or "")
+    configured_code_provider = "codex_cli" if runtime_provider_type == "codex_cli" else ("openai_compatible" if runtime_provider_type in {"openai_compatible", "openai"} else settings.worker_code_provider)
+    provider_result: dict[str, Any] = {"provider": "deterministic", "skipped_reason": None, "runtime_provider_type": runtime_provider_type, "auth_mode": runtime_auth_mode}
+    if not settings.worker_enable_codex and configured_code_provider == "codex_cli":
         ctx.event(
             "code_agent",
             "Deterministic scaffold mode active; Codex CLI was not required",
             metadata_json={"provider": "deterministic", "worker_enable_codex": False, "iteration": iteration},
         )
-    elif settings.worker_code_provider == "codex_cli":
+    elif configured_code_provider == "codex_cli":
         try:
             provider_result = run_codex_code_pass(ctx, iteration, qa_error)
         except ProviderUnavailable as exc:
@@ -1433,8 +1585,30 @@ Review this policy with a human before store submission.
                 stderr=str(exc),
                 metadata_json={"provider": "codex_cli", "iteration": iteration},
             )
+    elif configured_code_provider == "openai_compatible":
+        strategy_prompt = f"""{skill_prompt_header(ctx.selected_skills)}
+
+Review the generated Flutter app strategy for {ctx.project["name"]}. If there is a QA error, propose safe targeted fixes. Do not return secrets.
+
+QA error:
+{qa_error or "none"}"""
+        assist = ctx.provider_text_assist("code_agent_strategy", strategy_prompt, max_output_tokens=900)
+        assist_completed = assist.get("status") == "completed"
+        provider_result = {
+            "provider": "openai_compatible" if assist_completed else "deterministic",
+            "status": assist.get("status"),
+            "detail": assist.get("detail"),
+            "skipped_reason": None if assist_completed else assist.get("detail"),
+            "applied_as": "strategy_context" if assist_completed else "deterministic_fallback",
+            "runtime_provider_type": runtime_provider_type,
+            "auth_mode": runtime_auth_mode,
+        }
+        if assist.get("text"):
+            strategy_path = ctx.artifacts_dir / f"provider_code_strategy_iteration_{iteration}.md"
+            write_text(strategy_path, str(assist["text"]))
+            ctx.api.artifact(ctx.project_id, "document", strategy_path.name, str(strategy_path), {"provider": assist.get("provider"), "status": assist.get("status")})
     else:
-        provider_result = {"provider": settings.worker_code_provider, "skipped_reason": "Provider is not implemented"}
+        provider_result = {"provider": configured_code_provider, "skipped_reason": "Provider is not implemented for code editing; deterministic scaffold kept", "runtime_provider_type": runtime_provider_type, "auth_mode": runtime_auth_mode}
         ctx.event(
             "code_agent",
             "Configured code provider is not implemented; kept deterministic scaffold",
@@ -1601,11 +1775,35 @@ def run_pipeline(api: FactoryApi, project_id: str) -> None:
     (workspace / "artifacts").mkdir(exist_ok=True)
 
     ctx = PipelineContext(api, project, workspace, idea, tasks)
+    linked_brief_for_config = get_linked_brief(ctx)
+    runtime_config = sanitized_runtime_config(api, linked_brief_for_config)
+    selected_skills = select_skills(brief=linked_brief_for_config, runtime_config=runtime_config)
+    ctx.runtime_config = runtime_config
+    ctx.selected_skills = selected_skills
     runtime_settings = api.app_settings()
     max_fix_iterations = int(runtime_settings.get("max_fix_iterations") or settings.worker_max_fix_iterations)
     api.set_project_status(project_id, "running", str(workspace))
-    ctx.event("pipeline", "Pipeline started", metadata_json={"workspace": str(workspace)})
-    ctx.event("autopilot", "Autopilot started: planning full app factory run", metadata_json={"state": "planning", "project_id": project_id})
+    ctx.event("pipeline", "Pipeline started", metadata_json={"workspace": str(workspace), "config": config_summary(runtime_config)})
+    ctx.event(
+        "autopilot",
+        "Autopilot started: planning full app factory run",
+        metadata_json={"state": "planning", "project_id": project_id, "config": config_summary(runtime_config), "skills": selected_skills},
+    )
+    for skill in selected_skills:
+        try:
+            api.record_skill_run(
+                {
+                    "skill_slug": skill["slug"],
+                    "project_id": project_id,
+                    "factory_brief_id": (linked_brief_for_config or {}).get("id"),
+                    "agent_name": "autopilot_pipeline",
+                    "output_summary": skill.get("reason", ""),
+                    "tokens_estimated": skill.get("token_budget", 0),
+                    "status": "used",
+                }
+            )
+        except Exception:
+            pass
     for task in tasks:
         brief_id = task.get("input_json", {}).get("factory_brief_id")
         if brief_id:

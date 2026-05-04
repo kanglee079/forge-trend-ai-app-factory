@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Bot, CheckCircle2, FolderOpen, Loader2, PlusCircle, RefreshCw, Search, Settings2, Smartphone } from "lucide-react";
+import { AlertTriangle, Bot, CheckCircle2, FolderOpen, Loader2, PlusCircle, RefreshCw, Route, Search, Settings2, SlidersHorizontal, Smartphone } from "lucide-react";
 import { AgentEvent, api, ApiError, ApiKey, DoctorResponse, Project, Worker } from "@/lib/api";
 import { useLanguage } from "@/lib/i18n";
 import { formatDate, isReadyWorker } from "@/lib/utils";
@@ -120,10 +120,12 @@ export default function OverviewPage() {
           </div>
           <Badge tone={ready ? "success" : "warning"}>{ready ? t("readyToCreate") : t("needsSetup")}</Badge>
         </div>
-        <div className="grid gap-3 md:grid-cols-3">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          <ActionTile href="/config" icon={<SlidersHorizontal size={20} />} title="Cấu hình hệ thống" body="Import config.toml hoặc nhập provider, API key, base URL, model và plugin trên UI." primary />
           <ActionTile href="/create" icon={<PlusCircle size={20} />} title={t("createFromIdea")} body={t("createFromIdeaHelp")} primary />
           <ActionTile href="/create?mode=auto_trend" icon={<Search size={20} />} title={t("autoTrendCreate")} body={t("autoTrendCreateHelp")} />
           <ActionTile href="/projects" icon={<FolderOpen size={20} />} title={t("openRecentProject")} body={t("openRecentProjectHelp")} />
+          <ActionTile href="/how-it-works" icon={<Route size={20} />} title="Cách hoạt động" body="Xem luồng từ ý tưởng đến APK/source/report theo tiếng Việt dễ hiểu." />
         </div>
       </Card>
 

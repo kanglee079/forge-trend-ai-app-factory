@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { Activity, Bot, Boxes, Brain, CheckCircle2, FileArchive, FileQuestion, FileText, KeyRound, LayoutDashboard, Lightbulb, ListTree, Moon, PackageCheck, Plug, PlusCircle, Route, Server, Settings, Stethoscope, Smartphone, Sun } from "lucide-react";
+import { Activity, Bot, Boxes, Brain, CheckCircle2, FileArchive, FileQuestion, FileText, GraduationCap, KeyRound, LayoutDashboard, Lightbulb, ListTree, Moon, PackageCheck, Plug, PlusCircle, Route, Search, Server, Settings, SlidersHorizontal, Smartphone, Stethoscope, Sun } from "lucide-react";
 import { api } from "@/lib/api";
 import { useLanguage } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -14,8 +14,10 @@ import { Badge, Button } from "@/components/ui";
 const navItems = [
   { href: "/", labelKey: "overview", icon: LayoutDashboard, mode: "simple" },
   { href: "/create", labelKey: "createApp", icon: PlusCircle, mode: "simple" },
+  { href: "/config", labelKey: "configStudio", icon: SlidersHorizontal, mode: "simple" },
   { href: "/candidates", labelKey: "candidates", icon: PackageCheck, mode: "simple" },
   { href: "/artifacts", labelKey: "artifacts", icon: FileArchive, mode: "simple" },
+  { href: "/how-it-works", labelKey: "howItWorks", icon: Route, mode: "simple" },
   { href: "/settings", labelKey: "settings", icon: Settings, mode: "simple" },
   { href: "/help", labelKey: "help", icon: FileQuestion, mode: "simple" },
   { href: "/factory", labelKey: "factory", icon: Bot, mode: "advanced" },
@@ -27,6 +29,8 @@ const navItems = [
   { href: "/projects", labelKey: "projects", icon: Smartphone, mode: "advanced" },
   { href: "/providers", labelKey: "providers", icon: Route, mode: "advanced" },
   { href: "/plugins", labelKey: "plugins", icon: Plug, mode: "advanced" },
+  { href: "/skills", labelKey: "skills", icon: GraduationCap, mode: "advanced" },
+  { href: "/scan", labelKey: "scan", icon: Search, mode: "advanced" },
   { href: "/learning", labelKey: "learning", icon: Brain, mode: "advanced" },
   { href: "/setup", labelKey: "setup", icon: Boxes, mode: "advanced" },
   { href: "/logs", labelKey: "logs", icon: FileText, mode: "advanced" }
