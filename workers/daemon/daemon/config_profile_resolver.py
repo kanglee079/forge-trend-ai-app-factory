@@ -41,5 +41,6 @@ def config_summary(runtime_config: dict[str, Any]) -> dict[str, Any]:
         "provider_auth_mode": provider.get("auth_mode"),
         "plugins": [item.get("plugin_id") for item in runtime_config.get("enabled_plugins", [])],
         "skills": [item.get("slug") for item in runtime_config.get("enabled_skills", [])],
+        "applied_learning_rules": [item.get("rule_key") for item in runtime_config.get("applied_learning_rules", [])],
         "secrets_redacted": True,
     }

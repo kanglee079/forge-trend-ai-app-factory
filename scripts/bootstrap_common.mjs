@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const root = resolve(scriptDir, "..");
 const logsDir = join(root, "logs");
-const logPath = join(logsDir, "bootstrap-common.log");
+const logPath = join(logsDir, "bootstrap.log");
 mkdirSync(logsDir, { recursive: true });
 
 function log(message) {

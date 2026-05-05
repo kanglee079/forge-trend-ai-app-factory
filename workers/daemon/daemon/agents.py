@@ -15,7 +15,7 @@ from daemon.provider_adapters import ADAPTERS, ProviderUnavailable, run_codex_cl
 from daemon.quality_gate import build_quality_gate_result, quality_gate_report_markdown, store_readiness_report_markdown
 from daemon.research.providers import build_research_bundle
 from daemon.safety import run_safe
-from daemon.app_archetypes import choose_archetype
+from daemon.app_archetypes import ARCHETYPES, choose_archetype
 from daemon.skills import select_skills
 
 
@@ -99,6 +99,7 @@ class PipelineContext:
             result = self.api.provider_completion(
                 {
                     "config_profile_id": config_profile_id,
+                    "runtime_config_snapshot": self.runtime_config,
                     "purpose": purpose,
                     "prompt": prompt,
                     "max_output_tokens": max_output_tokens,
@@ -120,6 +121,23 @@ class PipelineContext:
         except Exception as exc:
             self.event("provider_router", f"Provider text assist skipped: {purpose}", level="warning", stderr=str(exc))
             return {"status": "failed", "text": "", "detail": str(exc)}
+
+    def record_selected_skill_usage(self, agent_name: str, status: str, summary: str = "") -> None:
+        for skill in self.selected_skills:
+            try:
+                self.api.record_skill_run(
+                    {
+                        "skill_slug": skill["slug"],
+                        "project_id": self.project_id,
+                        "factory_brief_id": linked_brief_id(self) or None,
+                        "agent_name": agent_name,
+                        "output_summary": summary or skill.get("reason", ""),
+                        "tokens_estimated": skill.get("token_budget", 0),
+                        "status": status,
+                    }
+                )
+            except Exception:
+                pass
 
 
 def write_text(path: Path, content: str) -> None:
@@ -197,12 +215,47 @@ def get_selected_candidate(brief: dict[str, Any] | None, candidate_id: str) -> d
     )
 
 
+def brief_learning_context(brief: dict[str, Any] | None) -> dict[str, Any]:
+    return {
+        "category": (brief or {}).get("target_category"),
+        "language": (brief or {}).get("target_language"),
+        "monetization": (brief or {}).get("monetization_mode"),
+        "prompt": (brief or {}).get("raw_prompt"),
+        "quality_threshold": (brief or {}).get("quality_threshold"),
+    }
+
+
+def with_latest_learning_rules(api: FactoryApi, runtime_config: dict[str, Any], brief: dict[str, Any] | None) -> dict[str, Any]:
+    merged = dict(runtime_config or {})
+    try:
+        rules = api.applicable_learning_rules(brief_learning_context(brief))
+        if rules:
+            merged["applied_learning_rules"] = rules
+    except Exception:
+        merged.setdefault("applied_learning_rules", runtime_config.get("applied_learning_rules") or [])
+    return merged
+
+
+def preferred_archetype_from_learning(runtime_config: dict[str, Any]) -> dict[str, Any] | None:
+    for rule in runtime_config.get("applied_learning_rules") or []:
+        action = rule.get("action_json") or {}
+        preferred = action.get("preferred_archetype")
+        if preferred and preferred in ARCHETYPES:
+            return ARCHETYPES[preferred]
+    return None
+
+
 def build_app_blueprint(ctx: PipelineContext, brief: dict[str, Any] | None, candidate: dict[str, Any] | None, *, is_vi: bool, has_paywall: bool) -> dict[str, Any]:
-    archetype = choose_archetype((brief or {}).get("target_category"), (brief or {}).get("raw_prompt", ctx.project["name"]))
+    archetype = preferred_archetype_from_learning(ctx.runtime_config) or choose_archetype((brief or {}).get("target_category"), (brief or {}).get("raw_prompt", ctx.project["name"]))
     features = compact_list(
         (candidate or {}).get("core_features", []) or archetype.get("core_actions", []) or archetype.get("actions", []),
         ["Onboarding", "Home dashboard", "Core feature flow", "Progress history", "Settings", "Privacy"],
     )
+    if any((rule.get("action_json") or {}).get("require_interactive_core_flow") for rule in ctx.runtime_config.get("applied_learning_rules") or []):
+        features = compact_list(
+            [*features, "Domain-specific guided action", "Meaningful saved progress state", "Reviewable activity history"],
+            features,
+        )
     return {
         "app_name": ctx.project["name"],
         "target_user": (candidate or {}).get("target_user") or ("Người dùng Việt cần một app tập trung" if is_vi else "People who need one focused mobile workflow"),
@@ -398,8 +451,14 @@ def write_factory_run_report(
     if brief:
         selected_candidate = next((item for item in brief.get("candidates", []) if item.get("id") == candidate_id), None)
         selected_candidate = selected_candidate or next((item for item in brief.get("candidates", []) if item.get("status") == "selected"), None)
-    runtime_config = sanitized_runtime_config(ctx.api, brief)
+    runtime_config = ctx.runtime_config or sanitized_runtime_config(ctx.api, brief)
     config_info = config_summary(runtime_config)
+    selected_skills = ctx.selected_skills or select_skills(brief=brief, runtime_config=runtime_config)
+    selected_skill_lines = [
+        f"- {skill.get('slug')} ({skill.get('token_budget', 0)} tokens): {skill.get('reason') or skill.get('category')}"
+        for skill in selected_skills
+    ] or ["- none"]
+    selected_skill_token_budget = sum(int(skill.get("token_budget") or 0) for skill in selected_skills)
     code_events = [event for event in events if event.get("step") == "code_agent"]
     codex_event = next((event for event in code_events if event.get("metadata_json", {}).get("provider") == "codex_cli"), None)
     code_task = next((task for task in tasks if task.get("agent_name") == "code_agent"), None)
@@ -423,6 +482,11 @@ def write_factory_run_report(
         f"- Auth mode: {config_info.get('provider_auth_mode')}",
         f"- Plugins: {', '.join(config_info.get('plugins') or []) or 'none'}",
         f"- Skills: {', '.join(config_info.get('skills') or []) or 'none'}",
+        f"- Applied learning rules: {', '.join(rule.get('rule_key') for rule in runtime_config.get('applied_learning_rules') or []) or 'none'}",
+        "",
+        "## Selected Skills Used",
+        f"- Estimated token budget: {selected_skill_token_budget}",
+        *selected_skill_lines,
         "",
         "## Selected Candidate",
         f"- Candidate ID: {candidate_id or 'unknown'}",
@@ -525,6 +589,11 @@ def write_factory_run_report(
         f"- Network: {config_info.get('network_access')}",
         f"- Plugin: {', '.join(config_info.get('plugins') or []) or 'không có'}",
         f"- Skill: {', '.join(config_info.get('skills') or []) or 'không có'}",
+        f"- Learning rule: {', '.join(rule.get('rule_key') for rule in runtime_config.get('applied_learning_rules') or []) or 'không có'}",
+        "",
+        "## Skill đã dùng",
+        f"- Token budget ước tính: {selected_skill_token_budget}",
+        *selected_skill_lines,
         "",
         "## Kết quả QA",
         f"- Passed: {(qa_output or {}).get('passed')}",
@@ -556,7 +625,7 @@ def write_factory_run_report(
 
 def run_factory_brief(api: FactoryApi, brief_id: str) -> None:
     brief = api.get_factory_brief(brief_id)
-    runtime_config = sanitized_runtime_config(api, brief)
+    runtime_config = with_latest_learning_rules(api, sanitized_runtime_config(api, brief), brief)
     selected_skills = select_skills(brief=brief, runtime_config=runtime_config)
     try:
         api.factory_brief_event(
@@ -571,6 +640,14 @@ def run_factory_brief(api: FactoryApi, brief_id: str) -> None:
             "Autopilot selected skills: " + (", ".join(item["slug"] for item in selected_skills) or "none"),
             metadata_json={"step": "skills_selected", "skills": selected_skills, "config_profile": runtime_config.get("profile_name")},
         )
+        applied_rule_keys = [rule.get("rule_key") for rule in runtime_config.get("applied_learning_rules") or []]
+        if applied_rule_keys:
+            api.factory_brief_event(
+                brief_id,
+                "learning_rules_applied",
+                "Learning Memory applied rules: " + ", ".join(applied_rule_keys),
+                metadata_json={"step": "learning_rules_applied", "applied_learning_rules": runtime_config.get("applied_learning_rules")},
+            )
         for skill in selected_skills:
             try:
                 api.record_skill_run(
@@ -1745,6 +1822,7 @@ def run_agent(ctx: PipelineContext, agent_name: str, fn, *, iteration: int = 0, 
     try:
         output = fn(ctx, **kwargs)
         ctx.api.finish_run(run_id, "succeeded", output_json=output)
+        ctx.record_selected_skill_usage(agent_name, "succeeded", f"{agent_name} completed")
         task_payload: dict[str, Any] = {"status": "succeeded", "output_json": output}
         head = git_head(ctx)
         if head:
@@ -1753,6 +1831,7 @@ def run_agent(ctx: PipelineContext, agent_name: str, fn, *, iteration: int = 0, 
         return output
     except Exception as exc:
         ctx.api.finish_run(run_id, "failed", error_message=str(exc))
+        ctx.record_selected_skill_usage(agent_name, "failed", f"{agent_name} failed: {exc}")
         ctx.update_task(agent_name, {"status": "failed", "error_message": str(exc)})
         ctx.event(agent_name, f"{agent_name} failed", level="error", agent_run_id=run_id, stderr=str(exc))
         raise
@@ -1776,7 +1855,7 @@ def run_pipeline(api: FactoryApi, project_id: str) -> None:
 
     ctx = PipelineContext(api, project, workspace, idea, tasks)
     linked_brief_for_config = get_linked_brief(ctx)
-    runtime_config = sanitized_runtime_config(api, linked_brief_for_config)
+    runtime_config = with_latest_learning_rules(api, sanitized_runtime_config(api, linked_brief_for_config), linked_brief_for_config)
     selected_skills = select_skills(brief=linked_brief_for_config, runtime_config=runtime_config)
     ctx.runtime_config = runtime_config
     ctx.selected_skills = selected_skills
@@ -1784,6 +1863,12 @@ def run_pipeline(api: FactoryApi, project_id: str) -> None:
     max_fix_iterations = int(runtime_settings.get("max_fix_iterations") or settings.worker_max_fix_iterations)
     api.set_project_status(project_id, "running", str(workspace))
     ctx.event("pipeline", "Pipeline started", metadata_json={"workspace": str(workspace), "config": config_summary(runtime_config)})
+    if runtime_config.get("applied_learning_rules"):
+        ctx.event(
+            "autopilot_strategy_change",
+            "Learning Memory adjusted this run before agents started.",
+            metadata_json={"applied_learning_rules": runtime_config.get("applied_learning_rules")},
+        )
     ctx.event(
         "autopilot",
         "Autopilot started: planning full app factory run",
@@ -1835,7 +1920,12 @@ def run_pipeline(api: FactoryApi, project_id: str) -> None:
                 break
             error_text = f"{failed['command']}\nSTDOUT:\n{failed['stdout'][-4000:]}\nSTDERR:\n{failed['stderr'][-4000:]}"
             decision = autopilot_decision("fixing", error_text, iteration + 1, max_fix_iterations)
+            ctx.event("autopilot_decision", "QA failure classified and next action selected.", level="warning", metadata_json=decision)
+            if decision["action"] != "retry_fix":
+                ctx.event("autopilot_blocked", "Autopilot stopped QA repair and requires human review.", level="warning", metadata_json=decision)
+                break
             ctx.event("autopilot", "QA thất bại. Autopilot đang yêu cầu Code Agent sửa lỗi.", level="warning", metadata_json=decision)
+            ctx.event("autopilot_retry", "Retrying Code Agent after QA failure.", level="warning", metadata_json=decision)
             run_checked_agent(ctx, "code_agent", code_agent, iteration=iteration + 1, qa_error=error_text)
             fix_iterations += 1
 
@@ -1845,9 +1935,12 @@ def run_pipeline(api: FactoryApi, project_id: str) -> None:
             for policy_iteration in range(MAX_POLICY_FIX_ITERATIONS):
                 reason = "; ".join(policy_output.get("issues") or ["Policy gate failed"])
                 decision = autopilot_decision("fixing", reason, policy_iteration + 1, MAX_POLICY_FIX_ITERATIONS)
+                ctx.event("autopilot_decision", "Policy failure classified and next action selected.", level="warning", metadata_json=decision)
                 ctx.event("autopilot", "Policy Gate phát hiện vấn đề. Autopilot thử sửa copy/naming/permission trong giới hạn an toàn.", level="warning", metadata_json=decision)
                 if decision["action"] != "retry_fix":
+                    ctx.event("autopilot_blocked", "Autopilot stopped policy repair and requires human review.", level="warning", metadata_json=decision)
                     break
+                ctx.event("autopilot_retry", "Retrying Code Agent after policy failure.", level="warning", metadata_json=decision)
                 run_checked_agent(ctx, "code_agent", code_agent, iteration=max_fix_iterations + policy_iteration + 1, qa_error=f"Policy gate failure:\n{reason}")
                 fix_iterations += 1
                 policy_output = run_checked_agent(ctx, "policy_agent", policy_agent)
@@ -1860,9 +1953,13 @@ def run_pipeline(api: FactoryApi, project_id: str) -> None:
             for quality_iteration in range(MAX_QUALITY_FIX_ITERATIONS):
                 reason = "; ".join(quality_output.get("issues") or ["Quality gate failed"])
                 decision = autopilot_decision("fixing", reason, quality_iteration + 1, MAX_QUALITY_FIX_ITERATIONS)
+                ctx.event("autopilot_decision", "Quality failure classified and next action selected.", level="warning", metadata_json=decision)
                 ctx.event("autopilot", "Quality Gate phát hiện app còn yếu. Autopilot thử làm sâu feature flow.", level="warning", metadata_json=decision)
                 if decision["action"] != "retry_fix":
+                    ctx.event("autopilot_blocked", "Autopilot stopped quality repair and requires human review.", level="warning", metadata_json=decision)
                     break
+                ctx.event("autopilot_strategy_change", "Switching to product-depth repair strategy.", level="warning", metadata_json=decision)
+                ctx.event("autopilot_retry", "Retrying Code Agent after quality failure.", level="warning", metadata_json=decision)
                 run_checked_agent(ctx, "code_agent", code_agent, iteration=max_fix_iterations + MAX_POLICY_FIX_ITERATIONS + quality_iteration + 1, qa_error=f"Quality gate failure:\n{reason}\nDeepen product-specific interaction and remove generic copy.")
                 fix_iterations += 1
                 qa_output = run_checked_agent(ctx, "qa_agent", qa_agent)
@@ -1872,6 +1969,22 @@ def run_pipeline(api: FactoryApi, project_id: str) -> None:
                     break
 
         final_status = "release_candidate" if qa_output and qa_output.get("passed") and policy_output.get("passed") and quality_output.get("passed") else "NEEDS_HUMAN_REVIEW"
+        for skill in selected_skills:
+            try:
+                api.record_skill_run(
+                    {
+                        "skill_slug": skill["slug"],
+                        "project_id": project_id,
+                        "factory_brief_id": (linked_brief_for_config or {}).get("id"),
+                        "agent_name": "autopilot_retrospective",
+                        "output_summary": f"Final status {final_status}; quality score {(quality_output or {}).get('score')}",
+                        "tokens_estimated": skill.get("token_budget", 0),
+                        "status": "succeeded" if final_status == "release_candidate" else "used",
+                        "quality_delta": int((quality_output or {}).get("score") or 0) - 75,
+                    }
+                )
+            except Exception:
+                pass
         provider = str((code_output or {}).get("code_provider", {}).get("provider") or "deterministic")
         archetype = None
         blueprint_path = ctx.artifacts_dir / "app_blueprint.json"
@@ -1897,6 +2010,7 @@ def run_pipeline(api: FactoryApi, project_id: str) -> None:
         if final_status == "release_candidate":
             api.set_project_status(project_id, "release_candidate", str(workspace))
             write_factory_run_report(ctx, qa_output, policy_output, "release_candidate", quality_output)
+            ctx.event("autopilot_completed", "Autopilot completed with release_candidate.", metadata_json={"final_status": final_status, "fix_iterations": fix_iterations})
             ctx.event("pipeline", "Pipeline completed successfully")
             for task in tasks:
                 brief_id = task.get("input_json", {}).get("factory_brief_id")
@@ -1912,6 +2026,7 @@ def run_pipeline(api: FactoryApi, project_id: str) -> None:
         else:
             api.set_project_status(project_id, "NEEDS_HUMAN_REVIEW", str(workspace))
             write_factory_run_report(ctx, qa_output, policy_output, "NEEDS_HUMAN_REVIEW", quality_output)
+            ctx.event("autopilot_blocked", "Autopilot reached limits or gates and needs human review.", level="warning", metadata_json={"final_status": final_status, "fix_iterations": fix_iterations})
             ctx.event(
                 "pipeline",
                 "Pipeline needs human review",

@@ -7,14 +7,16 @@ from .retrospective import human_review_reason
 
 
 def autopilot_decision(state: str, reason: str, attempt: int, max_attempts: int) -> dict[str, Any]:
-    should_retry = attempt < max_attempts and classify_failure(reason) not in {"provider_auth_missing", "budget_exceeded"}
+    taxonomy = classify_failure(reason)
+    blocking = taxonomy in {"provider_auth_missing", "budget_exceeded"} or (taxonomy == "policy_risk" and "high" in (reason or "").lower())
+    should_retry = attempt < max_attempts and not blocking
     return {
         "state": state,
         "reason": reason,
         "attempt": attempt,
         "max_attempts": max_attempts,
         "action": "retry_fix" if should_retry else "block_for_human_review",
-        "taxonomy": classify_failure(reason),
+        "taxonomy": taxonomy,
     }
 
 

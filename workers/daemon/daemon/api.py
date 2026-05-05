@@ -60,6 +60,9 @@ class FactoryApi:
     def provider_completion(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/internal/provider-completion", json=payload)
 
+    def applicable_learning_rules(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        return self._request("POST", "/internal/learning/applicable-rules", json=payload)
+
     def get_factory_brief(self, brief_id: str) -> dict[str, Any]:
         return self._request("GET", f"/factory-briefs/{brief_id}")
 

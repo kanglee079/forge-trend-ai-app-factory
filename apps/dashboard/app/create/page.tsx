@@ -42,6 +42,7 @@ export default function CreateAppPage() {
   const [configProfiles, setConfigProfiles] = useState<ConfigProfile[]>([]);
   const [runProfiles, setRunProfiles] = useState<RunProfile[]>([]);
   const [showMore, setShowMore] = useState(false);
+  const [confirmationOpen, setConfirmationOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<{ tone: "success" | "danger" | "warning"; message: string } | null>(null);
 
@@ -73,6 +74,7 @@ export default function CreateAppPage() {
 
   function update(name: keyof typeof form, value: string) {
     setForm((current) => ({ ...current, [name]: value }));
+    setConfirmationOpen(false);
   }
 
   function applyPreset(preset: (typeof presets)[number]) {
@@ -84,6 +86,11 @@ export default function CreateAppPage() {
     if (saving) return;
     if (!form.raw_prompt.trim()) {
       setNotice({ tone: "warning", message: "Hãy nhập ý tưởng app trước khi tạo." });
+      return;
+    }
+    if (!confirmationOpen) {
+      setConfirmationOpen(true);
+      setNotice({ tone: "warning", message: "Kiểm tra pipeline bên phải. Bấm xác nhận lần nữa để ForgeTrend bắt đầu chạy." });
       return;
     }
     setSaving(true);
@@ -112,6 +119,7 @@ export default function CreateAppPage() {
         policy_strictness: form.policy_strictness,
       });
       await api.startFactoryBrief(brief.id);
+      setConfirmationOpen(false);
       setNotice({ tone: "success", message: t("appQueued") });
       router.push("/factory");
     } catch (error) {
@@ -147,7 +155,7 @@ export default function CreateAppPage() {
             </div>
             <Button type="submit" disabled={saving}>
               {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play size={16} />}
-              {saving ? t("creatingApp") : t("startCreatingApp")}
+              {saving ? t("creatingApp") : confirmationOpen ? "Xác nhận và bắt đầu" : t("startCreatingApp")}
             </Button>
           </div>
 
@@ -201,6 +209,7 @@ export default function CreateAppPage() {
           </Card>
           <Card>
             <h2 className="mb-3 text-base font-semibold">Sau khi bấm bắt đầu</h2>
+            {confirmationOpen ? <Notice tone="warning" className="mb-3">Pipeline chính xác sẽ chạy theo thứ tự bên dưới. Hệ thống có thể tự retry/sửa lỗi trong giới hạn, nhưng production publish vẫn cần con người duyệt.</Notice> : null}
             <div className="space-y-2 text-sm">
               {["Nghiên cứu ý tưởng", "Chọn hướng app", "Viết PRD", "Tạo thiết kế", "Code Flutter", "Test và sửa lỗi", "Kiểm tra store-readiness", "Xuất APK/source/report"].map((item, index) => (
                 <div key={item} className="flex items-center gap-2 rounded-md border border-border bg-background px-3 py-2">

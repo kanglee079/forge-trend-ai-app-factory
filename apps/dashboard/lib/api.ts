@@ -147,6 +147,7 @@ export type RuntimeConfig = {
   enabled_plugins: Array<Record<string, unknown>>;
   enabled_skills: Array<Record<string, unknown>>;
   trusted_projects: Array<Record<string, unknown>>;
+  applied_learning_rules: Array<Record<string, unknown>>;
   secrets_redacted: boolean;
 };
 
@@ -428,6 +429,19 @@ export type SkillPack = {
   score: Record<string, unknown>;
 };
 
+export type SkillRun = {
+  id: string;
+  skill_pack_id: string;
+  project_id: string | null;
+  factory_brief_id: string | null;
+  agent_name: string;
+  input_hash: string;
+  output_summary: string;
+  tokens_estimated: number;
+  status: string;
+  created_at: string;
+};
+
 export type RunProfile = {
   id: string;
   name: string;
@@ -596,6 +610,14 @@ export const api = {
   learningRules: () => request<LearningRule[]>("/learning/rules"),
   updateLearningRule: (id: string, body: unknown) => request<LearningRule>(`/learning/rules/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   skillPacks: () => request<SkillPack[]>("/skill-packs"),
+  skillRuns: (params?: { project_id?: string; factory_brief_id?: string; limit?: number }) => {
+    const search = new URLSearchParams();
+    if (params?.project_id) search.set("project_id", params.project_id);
+    if (params?.factory_brief_id) search.set("factory_brief_id", params.factory_brief_id);
+    if (params?.limit) search.set("limit", String(params.limit));
+    const query = search.toString();
+    return request<SkillRun[]>(`/skill-runs${query ? `?${query}` : ""}`);
+  },
   scanInstalledSkills: () => request<SkillPack[]>("/skill-packs/scan-installed", { method: "POST" }),
   updateSkillPack: (id: string, body: unknown) => request<SkillPack>(`/skill-packs/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   testSkillPack: (id: string, body: unknown) => request<{ skill_pack_id: string; rendered_prompt: string; estimated_tokens: number }>(`/skill-packs/${id}/test`, { method: "POST", body: JSON.stringify(body) }),

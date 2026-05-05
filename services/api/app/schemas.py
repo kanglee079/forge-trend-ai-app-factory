@@ -264,6 +264,7 @@ class RuntimeConfigResponse(BaseModel):
     enabled_plugins: list[dict] = Field(default_factory=list)
     enabled_skills: list[dict] = Field(default_factory=list)
     trusted_projects: list[dict] = Field(default_factory=list)
+    applied_learning_rules: list[dict] = Field(default_factory=list)
     secrets_redacted: bool = True
 
 
@@ -821,6 +822,19 @@ class SkillPackRead(ApiModel):
     score: dict = Field(default_factory=dict)
 
 
+class SkillRunRead(ApiModel):
+    id: UUID
+    skill_pack_id: UUID
+    project_id: UUID | None
+    factory_brief_id: UUID | None
+    agent_name: str
+    input_hash: str
+    output_summary: str
+    tokens_estimated: int
+    status: str
+    created_at: datetime
+
+
 class SkillTestPayload(BaseModel):
     sample_input: dict = Field(default_factory=dict)
 
@@ -918,6 +932,7 @@ class ContextPackRead(ApiModel):
 
 class ProviderCompletionRequest(BaseModel):
     config_profile_id: UUID | None = None
+    runtime_config_snapshot: dict | None = None
     purpose: str = "agent_assist"
     prompt: str
     max_output_tokens: int = Field(default=1200, ge=16, le=8000)

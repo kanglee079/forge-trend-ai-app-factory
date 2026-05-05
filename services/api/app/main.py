@@ -6,9 +6,10 @@ import socket
 import subprocess
 import tomllib
 import urllib.request
+import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -138,6 +139,7 @@ from app.schemas import (
     SkillPackPatch,
     SkillPackRead,
     SkillPromptRead,
+    SkillRunRead,
     SkillTestPayload,
     SkillTestResponse,
     SourceItemPatch,
@@ -157,7 +159,12 @@ app = FastAPI(title="ForgeTrend AI App Factory API", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3100",
+        "http://127.0.0.1:3100",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -589,7 +596,13 @@ def record_learning_from_evaluation(db: Session, evaluation: RunEvaluation) -> N
                 rule_key="force_deeper_feature_flow",
                 description="Nếu app fail vì copy generic hoặc luồng tính năng yếu, lần sau ép blueprint sâu hơn và thêm core flow tương tác.",
                 trigger_json={"failure_taxonomy": taxonomy},
-                action_json={"blueprint_depth": "deep", "require_interactive_core_flow": True},
+                action_json={
+                    "blueprint_depth": "deep",
+                    "require_interactive_core_flow": True,
+                    "selected_skills": ["product_depth_enhancer", "flutter_store_ready", "code_review"],
+                    "quality_threshold_min": 80,
+                    "prompt_fragment": "force_domain_specific_core_flow",
+                },
                 confidence_score=75,
             )
         if taxonomy == "provider_auth_missing":
@@ -610,6 +623,69 @@ def record_learning_from_evaluation(db: Session, evaluation: RunEvaluation) -> N
             action_json={"preferred_archetype": "education"},
             confidence_score=70,
         )
+
+
+def brief_learning_context(brief_data: dict | None = None, brief: FactoryBrief | None = None) -> dict:
+    if brief is not None:
+        return {
+            "category": brief.target_category,
+            "language": brief.target_language,
+            "monetization": brief.monetization_mode,
+            "prompt": brief.raw_prompt,
+            "quality_threshold": brief.quality_threshold,
+        }
+    return {
+        "category": (brief_data or {}).get("target_category"),
+        "language": (brief_data or {}).get("target_language"),
+        "monetization": (brief_data or {}).get("monetization_mode"),
+        "prompt": (brief_data or {}).get("raw_prompt"),
+        "quality_threshold": (brief_data or {}).get("quality_threshold"),
+    }
+
+
+def learning_rule_applies(rule: LearningRule, context: dict) -> bool:
+    trigger = rule.trigger_json or {}
+    category = str(context.get("category") or "").lower()
+    language = str(context.get("language") or "").lower()
+    monetization = str(context.get("monetization") or "").lower()
+    if trigger.get("category") and str(trigger["category"]).lower() != category:
+        return False
+    if trigger.get("language") and str(trigger["language"]).lower() != language:
+        return False
+    if trigger.get("monetization") and str(trigger["monetization"]).lower() != monetization:
+        return False
+    if trigger.get("failure_taxonomy"):
+        # Historical failure rules are global heuristics, but only apply when there is enough brief context
+        # to prove this is a real future run rather than an unscoped default config request.
+        return bool(category or language or monetization or context.get("prompt"))
+    return bool(trigger)
+
+
+def applicable_learning_rules(db: Session, context: dict | None = None, limit: int = 20) -> list[dict]:
+    rules = list(
+        db.scalars(
+            select(LearningRule)
+            .where(LearningRule.enabled.is_(True))
+            .order_by(desc(LearningRule.confidence_score), LearningRule.rule_key)
+            .limit(limit)
+        ).all()
+    )
+    context = context or {}
+    applied: list[dict] = []
+    for rule in rules:
+        if context and not learning_rule_applies(rule, context):
+            continue
+        applied.append(
+            {
+                "id": str(rule.id),
+                "rule_key": rule.rule_key,
+                "description": rule.description,
+                "confidence_score": rule.confidence_score,
+                "trigger_json": rule.trigger_json,
+                "action_json": rule.action_json,
+            }
+        )
+    return applied
 
 
 def build_brief_detail(db: Session, brief: FactoryBrief) -> FactoryBriefDetail:
@@ -656,6 +732,23 @@ BUILTIN_SKILLS = [
                 "prompt_template": "Build a store-ready Flutter MVP for {{app_name}}. Require onboarding, home dashboard, app-specific core flow, settings, privacy, empty/error/success states, tests, and no production publishing automation.",
                 "success_criteria_json": {"must_have": ["core_flow", "qa", "privacy", "store_readiness"]},
                 "token_budget": 1200,
+            }
+        ],
+    },
+    {
+        "name": "Product Depth Enhancer",
+        "slug": "product_depth_enhancer",
+        "category": "app_generation",
+        "description": "Lam sau core flow khi app bi generic/thin, ep co tuong tac, data mau co y nghia va copy theo domain.",
+        "token_budget": 1800,
+        "prompts": [
+            {
+                "name": "deepen_core_flow",
+                "purpose": "Turn a thin generated app into a product-specific MVP.",
+                "when_to_use": "When learning memory or quality gate detects generic copy, placeholder-heavy screens, or weak core features.",
+                "prompt_template": "Deepen {{app_name}} by adding domain-specific actions, meaningful sample data, empty/error/success states, and copy that proves the app solves a real user job. Remove generic placeholder language.",
+                "success_criteria_json": {"must_have": ["domain_specific_actions", "meaningful_state", "no_generic_copy"]},
+                "token_budget": 900,
             }
         ],
     },
@@ -846,7 +939,7 @@ RUN_PROFILE_PRESETS = [
         "name": "Chat luong cao",
         "slug": "high_quality",
         "description": "Tang nguong chat luong va bat nhieu skill policy/store-readiness.",
-        "skill_slugs": ["trend_research", "flutter_store_ready", "vietnamese_ux_writer", "google_play_policy", "app_store_readiness", "code_review"],
+        "skill_slugs": ["trend_research", "flutter_store_ready", "product_depth_enhancer", "vietnamese_ux_writer", "google_play_policy", "app_store_readiness", "code_review"],
         "token_budget": 30000,
         "quality_threshold": 85,
         "max_iterations": 5,
@@ -886,7 +979,7 @@ RUN_PROFILE_PRESETS = [
         "name": "App tieng Viet de test store",
         "slug": "vi_store_test",
         "description": "Mac dinh tieng Viet, tap trung copy, policy, store asset va goi test noi bo.",
-        "skill_slugs": ["vietnamese_ux_writer", "flutter_store_ready", "google_play_policy", "aso_listing", "privacy_policy"],
+        "skill_slugs": ["vietnamese_ux_writer", "flutter_store_ready", "product_depth_enhancer", "google_play_policy", "aso_listing", "privacy_policy"],
         "token_budget": 18000,
         "quality_threshold": 80,
         "max_iterations": 4,
@@ -983,7 +1076,21 @@ def active_provider_for_profile(db: Session, profile: ConfigProfile) -> Provider
     return next((item for item in providers if item.enabled), None) or (providers[0] if providers else None)
 
 
-def build_runtime_config(db: Session, profile: ConfigProfile | None = None) -> RuntimeConfigResponse:
+def skill_prompt_fragments_for_runtime(db: Session, pack_id: UUID) -> list[dict]:
+    prompts = list(db.scalars(select(SkillPrompt).where(SkillPrompt.skill_pack_id == pack_id).order_by(SkillPrompt.name)).all())
+    return [
+        {
+            "name": item.name,
+            "purpose": item.purpose,
+            "when_to_use": item.when_to_use,
+            "prompt_template": item.prompt_template,
+            "token_budget": item.token_budget,
+        }
+        for item in prompts
+    ]
+
+
+def build_runtime_config(db: Session, profile: ConfigProfile | None = None, brief_context: dict | None = None) -> RuntimeConfigResponse:
     profile = profile or seed_default_config_profile(db)
     provider = active_provider_for_profile(db, profile)
     provider_payload: dict = {}
@@ -1016,10 +1123,18 @@ def build_runtime_config(db: Session, profile: ConfigProfile | None = None) -> R
         if item.enabled
     ]
     enabled_skills = [
-        {"slug": item.slug, "name": item.name, "category": item.category, "token_budget": item.token_budget, "quality_score": item.quality_score}
+        {
+            "slug": item.slug,
+            "name": item.name,
+            "category": item.category,
+            "token_budget": item.token_budget,
+            "quality_score": item.quality_score,
+            "prompt_fragments": skill_prompt_fragments_for_runtime(db, item.id),
+        }
         for item in db.scalars(select(SkillPack).where(SkillPack.enabled.is_(True)).order_by(desc(SkillPack.quality_score), SkillPack.name)).all()
     ]
     trusted_projects = [{"path": item.path, "trust_level": item.trust_level} for item in profile_trusted_projects(db, profile.id)]
+    applied_rules = applicable_learning_rules(db, brief_context or {}, limit=20)
     return RuntimeConfigResponse(
         config_profile_id=profile.id,
         profile_name=profile.name,
@@ -1035,12 +1150,27 @@ def build_runtime_config(db: Session, profile: ConfigProfile | None = None) -> R
         enabled_plugins=enabled_plugins,
         enabled_skills=enabled_skills,
         trusted_projects=trusted_projects,
+        applied_learning_rules=applied_rules,
         secrets_redacted=True,
     )
 
 
-def runtime_config_snapshot(db: Session, profile: ConfigProfile | None = None) -> dict:
-    return build_runtime_config(db, profile).model_dump(mode="json")
+def runtime_config_snapshot(db: Session, profile: ConfigProfile | None = None, brief_context: dict | None = None) -> dict:
+    return build_runtime_config(db, profile, brief_context).model_dump(mode="json")
+
+
+def runtime_requires_codex_worker(runtime_snapshot: dict | None) -> bool:
+    provider = (runtime_snapshot or {}).get("provider") or {}
+    return str(provider.get("provider_type") or "").lower() == "codex_cli"
+
+
+def project_requires_codex_worker(db: Session, project: Project) -> bool:
+    brief = db.scalar(
+        select(FactoryBrief)
+        .where(FactoryBrief.selected_project_id == project.id)
+        .order_by(desc(FactoryBrief.created_at))
+    )
+    return runtime_requires_codex_worker((brief.runtime_config_snapshot_json if brief else None) or {})
 
 
 def toml_value(value: object) -> str:
@@ -1301,6 +1431,13 @@ def source_items_for_query(source_type: str, query: str, limit: int) -> list[dic
         }
     ]
     if source_type == "web_url":
+        parsed_url = urlparse(query)
+        allowed_domains = {item.strip().lower() for item in settings.research_allowed_domains.split(",") if item.strip()}
+        if parsed_url.scheme not in {"http", "https"} or not parsed_url.hostname:
+            raise HTTPException(status_code=422, detail="Scanner chỉ nhận URL http/https hợp lệ.")
+        hostname = parsed_url.hostname.lower()
+        if not any(hostname == domain or hostname.endswith(f".{domain}") for domain in allowed_domains):
+            raise HTTPException(status_code=403, detail="Web scanner chỉ đọc domain trong allowlist và chỉ lấy text để review.")
         try:
             request = urllib.request.Request(query, headers={"User-Agent": "ForgeTrend-Scanner"})
             with urllib.request.urlopen(request, timeout=6) as response:
@@ -1328,6 +1465,8 @@ def source_items_for_query(source_type: str, query: str, limit: int) -> list[dic
             item["metadata_json"] = {"safe_mode": "fallback", "query": query, "error": str(exc)}
             return [item]
     if source_type == "github_repo":
+        if not re.match(r"^(https://github\.com/)?[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/?$", query.strip()):
+            raise HTTPException(status_code=422, detail="GitHub repo scanner chỉ nhận owner/repo hoặc https://github.com/owner/repo.")
         repo = query.replace("https://github.com/", "").strip("/")
         parts = repo.split("/")
         if len(parts) >= 2:
@@ -1356,6 +1495,8 @@ def source_items_for_query(source_type: str, query: str, limit: int) -> list[dic
         return [item]
     if source_type != "github_search":
         return fallback[:limit]
+    if not re.search(r"(prompt|skill|flutter|mobile|app|ux|qa|policy|store|readme)", query, flags=re.I):
+        raise HTTPException(status_code=422, detail="GitHub scanner chỉ cho phép query liên quan prompt/skill/app factory để tránh scan rộng.")
     try:
         url = f"https://api.github.com/search/repositories?q={quote_plus(query)}&per_page={limit}"
         request = urllib.request.Request(url, headers={"User-Agent": "ForgeTrend-Scanner"})
@@ -1733,9 +1874,30 @@ def record_skill_run(payload: dict, db: Session = Depends(get_db)) -> ActionResp
     if score:
         score.success_count += 1 if payload.get("status") in {None, "used", "succeeded"} else 0
         score.failure_count += 1 if payload.get("status") == "failed" else 0
+        if payload.get("quality_delta") is not None:
+            delta = int(payload.get("quality_delta") or 0)
+            score.avg_quality_delta = int(round((score.avg_quality_delta + delta) / 2)) if score.success_count + score.failure_count > 1 else delta
+        if payload.get("tokens_saved") is not None:
+            tokens_saved = int(payload.get("tokens_saved") or 0)
+            score.avg_tokens_saved = int(round((score.avg_tokens_saved + tokens_saved) / 2)) if score.success_count + score.failure_count > 1 else tokens_saved
         score.last_used_at = datetime.now(UTC)
     db.commit()
     return ActionResponse(status="recorded", detail=f"Skill run recorded for {skill_slug}")
+
+
+@app.get("/skill-runs", response_model=list[SkillRunRead])
+def list_skill_runs(
+    project_id: UUID | None = None,
+    factory_brief_id: UUID | None = None,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+) -> list[SkillRun]:
+    query = select(SkillRun).order_by(desc(SkillRun.created_at)).limit(min(max(limit, 1), 500))
+    if project_id:
+        query = select(SkillRun).where(SkillRun.project_id == project_id).order_by(desc(SkillRun.created_at)).limit(min(max(limit, 1), 500))
+    if factory_brief_id:
+        query = select(SkillRun).where(SkillRun.factory_brief_id == factory_brief_id).order_by(desc(SkillRun.created_at)).limit(min(max(limit, 1), 500))
+    return list(db.scalars(query).all())
 
 
 @app.get("/run-profiles", response_model=list[RunProfileRead])
@@ -1747,6 +1909,11 @@ def list_run_profiles(db: Session = Depends(get_db)) -> list[RunProfile]:
 
 @app.post("/scan/runs", response_model=ScanRunDetail)
 def create_source_scan(payload: SourceScanCreate, db: Session = Depends(get_db)) -> ScanRunDetail:
+    allowed_types = {"github_search", "github_repo", "web_url"}
+    if payload.source_type not in allowed_types:
+        raise HTTPException(status_code=422, detail=f"source_type must be one of {', '.join(sorted(allowed_types))}")
+    if len(payload.query.strip()) < 4:
+        raise HTTPException(status_code=422, detail="Scan query is too short.")
     scan = SourceScanRun(source_type=payload.source_type, query=payload.query, status="completed", finished_at=datetime.now(UTC))
     db.add(scan)
     db.flush()
@@ -1788,6 +1955,8 @@ def patch_source_item(id: UUID, payload: SourceItemPatch, db: Session = Depends(
 @app.post("/source-items/{id}/convert-to-skill", response_model=SkillPackRead)
 def convert_source_item_to_skill(id: UUID, db: Session = Depends(get_db)) -> SkillPackRead:
     item = get_or_404(db, SourceItem, id)
+    if item.status not in {"reviewed", "approved"}:
+        raise HTTPException(status_code=409, detail="Source item must be reviewed before conversion. External code is never executed.")
     slug = slugify(item.title)[:120] or f"source-skill-{item.id}"
     slug = slug.replace("-", "_")
     existing = db.scalar(select(SkillPack).where(SkillPack.slug == slug))
@@ -1875,6 +2044,11 @@ def list_learning_rules(db: Session = Depends(get_db)) -> list[LearningRule]:
     return list(db.scalars(select(LearningRule).order_by(desc(LearningRule.enabled), desc(LearningRule.confidence_score), LearningRule.rule_key)).all())
 
 
+@app.post("/internal/learning/applicable-rules")
+def read_applicable_learning_rules(payload: dict, db: Session = Depends(get_db)) -> list[dict]:
+    return applicable_learning_rules(db, payload or {}, limit=20)
+
+
 @app.patch("/learning/rules/{id}", response_model=LearningRuleRead)
 def patch_learning_rule(id: UUID, payload: LearningRulePatch, db: Session = Depends(get_db)) -> LearningRule:
     rule = get_or_404(db, LearningRule, id)
@@ -1910,26 +2084,33 @@ def provider_completion(payload: ProviderCompletionRequest, db: Session = Depend
     profile = db.get(ConfigProfile, payload.config_profile_id) if payload.config_profile_id else seed_default_config_profile(db)
     if not profile:
         raise HTTPException(status_code=404, detail="Config profile not found")
-    runtime = build_runtime_config(db, profile)
-    provider_payload = runtime.provider
+    runtime_snapshot = payload.runtime_config_snapshot or {}
+    runtime = runtime_snapshot or build_runtime_config(db, profile).model_dump(mode="json")
+    applied_rules = runtime.get("applied_learning_rules") or []
+    if any((rule.get("action_json") or {}).get("provider") == "deterministic" for rule in applied_rules):
+        return ProviderCompletionResponse(status="skipped", provider="deterministic", model=str(runtime.get("model") or profile.model), text="", detail="Learning rule requested deterministic provider fallback.", tokens_estimated=max(1, len(payload.prompt.split())))
+    provider_payload = runtime.get("provider") or {}
     provider_id = provider_payload.get("id")
     provider = db.get(ProviderProfile, UUID(str(provider_id))) if provider_id else None
+    model_name = str(runtime.get("model") or profile.model)
+    network_access = str(runtime.get("network_access") or profile.network_access)
+    disable_storage = bool(runtime.get("disable_response_storage", profile.disable_response_storage))
     if not provider or not provider.enabled:
-        return ProviderCompletionResponse(status="skipped", provider="deterministic", model=profile.model, text="", detail="No enabled provider profile.", tokens_estimated=0)
+        return ProviderCompletionResponse(status="skipped", provider="deterministic", model=model_name, text="", detail="No enabled provider profile.", tokens_estimated=0)
     if provider.provider_type not in {"openai_compatible", "openai"}:
-        return ProviderCompletionResponse(status="skipped", provider=provider.provider_type, model=profile.model, text="", detail="Provider type is handled by worker runtime, not API completion.", tokens_estimated=0)
-    if profile.network_access == "disabled":
-        return ProviderCompletionResponse(status="skipped", provider=provider.name, model=profile.model, text="", detail="Network access is disabled for this config profile.", tokens_estimated=0)
+        return ProviderCompletionResponse(status="skipped", provider=provider.provider_type, model=model_name, text="", detail="Provider type is handled by worker runtime, not API completion.", tokens_estimated=0)
+    if network_access == "disabled":
+        return ProviderCompletionResponse(status="skipped", provider=provider.name, model=model_name, text="", detail="Network access is disabled for this config profile.", tokens_estimated=0)
     if not provider.api_key_id:
-        return ProviderCompletionResponse(status="skipped", provider=provider.name, model=profile.model, text="", detail="No API key assigned to provider profile.", tokens_estimated=0)
+        return ProviderCompletionResponse(status="skipped", provider=provider.name, model=model_name, text="", detail="No API key assigned to provider profile.", tokens_estimated=0)
     api_key = db.get(ApiKey, provider.api_key_id)
     if not api_key or api_key.status != "active":
-        return ProviderCompletionResponse(status="skipped", provider=provider.name, model=profile.model, text="", detail="Assigned API key is not active.", tokens_estimated=0)
+        return ProviderCompletionResponse(status="skipped", provider=provider.name, model=model_name, text="", detail="Assigned API key is not active.", tokens_estimated=0)
     raw_key = decrypt_secret(api_key.encrypted_key)
     endpoint = provider_endpoint(provider.base_url, provider.wire_api)
     if provider.wire_api == "chat_completions":
         body = {
-            "model": profile.model,
+            "model": model_name,
             "messages": [
                 {"role": "system", "content": "You are assisting ForgeTrend. Return concise, directly usable text. Never include secrets."},
                 {"role": "user", "content": payload.prompt},
@@ -1938,10 +2119,10 @@ def provider_completion(payload: ProviderCompletionRequest, db: Session = Depend
         }
     else:
         body = {
-            "model": profile.model,
+            "model": model_name,
             "input": payload.prompt,
             "max_output_tokens": payload.max_output_tokens,
-            "store": not profile.disable_response_storage,
+            "store": not disable_storage,
         }
     request = urllib.request.Request(
         endpoint,
@@ -1958,13 +2139,13 @@ def provider_completion(payload: ProviderCompletionRequest, db: Session = Depend
         return ProviderCompletionResponse(
             status="completed" if text else "empty",
             provider=provider.name,
-            model=profile.model,
+            model=model_name,
             text=redact(text) or "",
             detail="Provider completion succeeded; secrets were redacted.",
             tokens_estimated=max(1, len(payload.prompt.split()) + len((text or "").split())),
         )
     except Exception as exc:
-        return ProviderCompletionResponse(status="failed", provider=provider.name, model=profile.model, text="", detail=redact(str(exc)) or "Provider completion failed", tokens_estimated=max(1, len(payload.prompt.split())))
+        return ProviderCompletionResponse(status="failed", provider=provider.name, model=model_name, text="", detail=redact(str(exc)) or "Provider completion failed", tokens_estimated=max(1, len(payload.prompt.split())))
 
 
 @app.get("/providers/status", response_model=list[ProviderStatus])
@@ -2148,7 +2329,13 @@ def create_factory_brief(payload: FactoryBriefCreate, db: Session = Depends(get_
             data["quality_threshold"] = run_profile.quality_threshold
     profile = profile or seed_default_config_profile(db)
     data["config_profile_id"] = profile.id
-    data["runtime_config_snapshot_json"] = runtime_config_snapshot(db, profile)
+    data["runtime_config_snapshot_json"] = runtime_config_snapshot(db, profile, brief_learning_context(data))
+    applied_rules = data["runtime_config_snapshot_json"].get("applied_learning_rules") or []
+    for rule in applied_rules:
+        action = rule.get("action_json") or {}
+        threshold_min = action.get("quality_threshold_min")
+        if isinstance(threshold_min, int):
+            data["quality_threshold"] = max(int(data.get("quality_threshold") or 0), threshold_min)
     item = FactoryBrief(**data, status="draft")
     db.add(item)
     db.flush()
@@ -2164,6 +2351,7 @@ def create_factory_brief(payload: FactoryBriefCreate, db: Session = Depends(get_
             "config_profile_name": profile.name,
             "run_profile_slug": run_profile_slug,
             "model": item.runtime_config_snapshot_json.get("model"),
+            "applied_learning_rules": [rule.get("rule_key") for rule in applied_rules],
         },
     )
     db.commit()
@@ -2189,7 +2377,7 @@ def start_factory_brief(id: UUID, db: Session = Depends(get_db)) -> FactoryBrief
         raise HTTPException(status_code=409, detail=f"Factory is {factory.mode}. Start it before queueing factory briefs.")
     brief = get_or_404(db, FactoryBrief, id)
     brief.status = "queued"
-    queue = enqueue_factory_brief(brief.id)
+    queue = enqueue_factory_brief(brief.id, requires_codex_worker=runtime_requires_codex_worker(brief.runtime_config_snapshot_json))
     factory_brief_event(
         db,
         brief,
@@ -2296,7 +2484,7 @@ def finalize_factory_brief(id: UUID, payload: FactoryBriefFinalizeRequest, db: S
         queue = "already_created"
         if payload.queue_pipeline:
             project.status = "queued"
-            queue = enqueue_pipeline(project.id)
+            queue = enqueue_pipeline(project.id, requires_codex_worker=runtime_requires_codex_worker(brief.runtime_config_snapshot_json))
             db.add(AgentEvent(project_id=project.id, step="factory_brief", level="info", message="Existing factory project queued again"))
             factory_brief_event(
                 db,
@@ -2420,7 +2608,7 @@ def finalize_factory_brief(id: UUID, payload: FactoryBriefFinalizeRequest, db: S
     )
     queue = "not_queued"
     if payload.queue_pipeline:
-        queue = enqueue_pipeline(project.id)
+        queue = enqueue_pipeline(project.id, requires_codex_worker=runtime_requires_codex_worker(brief.runtime_config_snapshot_json))
         db.add(AgentEvent(project_id=project.id, step="factory_brief", level="info", message="Project created from factory brief and pipeline queued"))
         factory_brief_event(
             db,
@@ -2603,7 +2791,7 @@ def run_pipeline(id: UUID, db: Session = Depends(get_db)) -> PipelineRunResponse
         raise HTTPException(status_code=409, detail=f"Factory is {factory.mode}. Start it before queueing pipeline runs.")
     project = get_or_404(db, Project, id)
     project.status = "queued"
-    queue = enqueue_pipeline(project.id)
+    queue = enqueue_pipeline(project.id, requires_codex_worker=project_requires_codex_worker(db, project))
     event = AgentEvent(project_id=project.id, step="pipeline", level="info", message="Pipeline queued")
     db.add(event)
     create_notification(db, level="info", title="Pipeline queued", message=f"{project.name} was queued.", entity_type="project", entity_id=project.id)
@@ -2618,7 +2806,7 @@ def retry_pipeline(id: UUID, db: Session = Depends(get_db)) -> PipelineRunRespon
         raise HTTPException(status_code=409, detail=f"Factory is {factory.mode}. Start it before queueing pipeline runs.")
     project = get_or_404(db, Project, id)
     project.status = "queued"
-    queue = enqueue_pipeline(project.id)
+    queue = enqueue_pipeline(project.id, requires_codex_worker=project_requires_codex_worker(db, project))
     event = AgentEvent(project_id=project.id, step="pipeline", level="info", message="Retry requested and pipeline queued")
     db.add(event)
     create_notification(db, level="info", title="Retry queued", message=f"{project.name} was queued again.", entity_type="project", entity_id=project.id)
@@ -2681,7 +2869,7 @@ def run_project_task(project_id: UUID, task_id: UUID, db: Session = Depends(get_
         raise HTTPException(status_code=404, detail="ProjectTask not found")
     task.status = "queued"
     project.status = "queued"
-    queue = enqueue_pipeline(project.id)
+    queue = enqueue_pipeline(project.id, requires_codex_worker=project_requires_codex_worker(db, project))
     db.add(AgentEvent(project_id=project.id, step=task.agent_name, level="info", message=f"Task queued: {task.title}", metadata_json={"task_id": str(task.id)}))
     create_notification(db, level="info", title="Task queued", message=f"{task.title} queued for {project.name}.", entity_type="project_task", entity_id=task.id)
     db.commit()
@@ -2746,19 +2934,43 @@ def create_internal_test_package(id: UUID, db: Session = Depends(get_db)) -> Art
     artifacts = list(db.scalars(select(Artifact).where(Artifact.project_id == id).order_by(desc(Artifact.created_at))).all())
     workspace = Path(project.workspace_path or settings.local_artifact_root or "workspaces").resolve()
     package_dir = workspace / "artifacts" / "internal_test_package"
+    if package_dir.exists():
+        shutil.rmtree(package_dir)
     package_dir.mkdir(parents=True, exist_ok=True)
 
     apk = next((item for item in artifacts if item.kind == "build" or item.name.endswith(".apk")), None)
     source = next((item for item in artifacts if item.kind == "source"), None)
-    quality = next((item for item in artifacts if item.name in {"product_score_report.vi.md", "quality_gate_report.md"}), None)
-    store = next((item for item in artifacts if item.name == "store_readiness_report.md"), None)
-    vi_report = next((item for item in artifacts if item.name == "factory_run_report.vi.md"), None)
+    by_name = {item.name: item for item in artifacts}
     blockers: list[str] = []
 
     if apk and Path(apk.path).exists():
         shutil.copy2(apk.path, package_dir / "app-debug.apk")
     else:
         blockers.append("Chưa có APK debug để test nội bộ.")
+
+    (package_dir / "source_path.txt").write_text(source.path if source else "chưa có source artifact", encoding="utf-8")
+    for report_name in [
+        "factory_run_report.vi.md",
+        "product_score_report.vi.md",
+        "quality_gate_report.md",
+        "store_readiness_report.md",
+    ]:
+        artifact = by_name.get(report_name)
+        if artifact and Path(artifact.path).exists():
+            shutil.copy2(artifact.path, package_dir / report_name)
+        else:
+            blockers.append(f"Thiếu report: {report_name}")
+    store_assets = by_name.get("store_assets")
+    if store_assets and Path(store_assets.path).exists() and Path(store_assets.path).is_dir():
+        shutil.copytree(store_assets.path, package_dir / "store_assets")
+    else:
+        (package_dir / "store_assets").mkdir(exist_ok=True)
+        copied_assets = 0
+        for asset in [item for item in artifacts if item.kind == "store_asset" and Path(item.path).exists()]:
+            shutil.copy2(asset.path, package_dir / "store_assets" / Path(asset.path).name)
+            copied_assets += 1
+        if not copied_assets:
+            blockers.append("Thiếu thư mục store_assets hoặc chưa tạo draft store assets.")
 
     readme = [
         "# Hướng dẫn tester nội bộ",
@@ -2771,13 +2983,10 @@ def create_internal_test_package(id: UUID, db: Session = Depends(get_db)) -> Art
         "- Không publish production từ gói này.",
         "",
         f"Source: {source.path if source else 'chưa có'}",
-        f"Vietnamese report: {vi_report.path if vi_report else 'chưa có'}",
+        "Report chính: factory_run_report.vi.md",
+        "Blocker chính: RELEASE_BLOCKERS.vi.md",
     ]
     (package_dir / "README_FOR_TESTER.vi.md").write_text("\n".join(readme), encoding="utf-8")
-    (package_dir / "STORE_LISTING_DRAFT.vi.md").write_text(
-        f"# Store listing draft\n\nApp: {project.name}\n\nĐọc store_assets trong Artifact Center và viết lại bằng judgment của con người trước khi submit.",
-        encoding="utf-8",
-    )
     (package_dir / "PRIVACY_REVIEW_CHECKLIST.vi.md").write_text(
         "\n".join([
             "# Privacy Review Checklist",
@@ -2793,19 +3002,25 @@ def create_internal_test_package(id: UUID, db: Session = Depends(get_db)) -> Art
         "\n".join(["# Screenshot Plan", "1. Onboarding", "2. Home dashboard", "3. Core feature", "4. Progress/history", "5. Settings/privacy/paywall"]),
         encoding="utf-8",
     )
-    if quality:
-        blockers.append(f"Đọc quality report: {quality.path}")
-    if store:
-        blockers.append(f"Đọc store readiness: {store.path}")
     blockers.append("Human approval required before production release.")
-    (package_dir / "RELEASE_BLOCKERS.md").write_text("\n".join(f"- {item}" for item in blockers), encoding="utf-8")
+    release_blockers = "\n".join(["# Release blockers", "", *[f"- {item}" for item in blockers]])
+    (package_dir / "RELEASE_BLOCKERS.vi.md").write_text(release_blockers, encoding="utf-8")
+    (package_dir / "RELEASE_BLOCKERS.md").write_text(release_blockers, encoding="utf-8")
+
+    zip_path = package_dir.with_suffix(".zip")
+    if zip_path.exists():
+        zip_path.unlink()
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path in package_dir.rglob("*"):
+            if path.is_file():
+                archive.write(path, path.relative_to(package_dir.parent))
 
     artifact = Artifact(
         project_id=id,
         kind="internal_test_package",
         name="internal_test_package",
         path=str(package_dir),
-        metadata_json={"apk": bool(apk), "source": source.path if source else None, "human_approval_required": True},
+        metadata_json={"apk": bool(apk and Path(apk.path).exists()), "source": source.path if source else None, "zip_path": str(zip_path), "human_approval_required": True},
     )
     db.add(artifact)
     create_notification(db, level="success", title="Internal test package created", message=f"Gói test nội bộ đã sẵn sàng cho {project.name}.", entity_type="project", entity_id=project.id)

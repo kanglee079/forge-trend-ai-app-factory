@@ -33,6 +33,14 @@ def safe_heartbeat(api: FactoryApi, worker_id: str, status: str = "online", curr
         print(f"heartbeat failed: {exc}")
 
 
+def requires_codex_worker(payload: dict[str, object]) -> bool:
+    return bool(payload.get("requires_codex_worker"))
+
+
+def requeue(redis: Redis, queue_name: str, payload: dict[str, object]) -> None:
+    redis.rpush(queue_name, json.dumps(payload))
+
+
 def main() -> None:
     signal.signal(signal.SIGINT, handle_shutdown)
     signal.signal(signal.SIGTERM, handle_shutdown)
@@ -63,6 +71,11 @@ def main() -> None:
             continue
         queue_name, raw_payload = item
         payload = json.loads(raw_payload)
+        if requires_codex_worker(payload) and not settings.worker_enable_codex:
+            requeue(redis, queue_name, payload)
+            print(f"worker {worker_id} skipped {queue_name} job because it requires Codex mode")
+            shutdown.wait(1)
+            continue
         if queue_name == settings.factory_brief_queue_name:
             brief_id = payload["factory_brief_id"]
             current_job["id"] = brief_id

@@ -158,8 +158,8 @@ export async function waitForProjectTerminal(projectId) {
 export function hasCodexProof({ events, tasks }) {
   return (
     events.some((event) => event.step === "code_agent" && event.message.includes("Codex CLI pass finished")) ||
-    events.some((event) => event.metadata_json?.provider === "codex_cli") ||
-    tasks.some((task) => task.output_json?.code_provider?.provider === "codex_cli" || JSON.stringify(task.output_json ?? {}).includes('"provider":"codex_cli"'))
+    events.some((event) => event.step === "code_agent" && event.metadata_json?.provider === "codex_cli") ||
+    tasks.some((task) => task.agent_name === "code_agent" && task.output_json?.code_provider?.provider === "codex_cli")
   );
 }
 

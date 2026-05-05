@@ -9,6 +9,8 @@ build/
 coverage/
 .turbo/
 .runtime/
+playwright-report/
+test-results/
 *.tsbuildinfo
 
 __pycache__/

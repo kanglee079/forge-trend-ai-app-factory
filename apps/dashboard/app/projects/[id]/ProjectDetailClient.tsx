@@ -309,7 +309,7 @@ function Overview({
         latestFailure={latestFailure}
         onCopyFailure={latestFailure?.detail ? () => navigator.clipboard.writeText(latestFailure.detail) : undefined}
       />
-      <LiveProgressExplanation steps={steps} latestFailure={latestFailure} />
+      <LiveProgressExplanation steps={steps} latestFailure={latestFailure} events={events} artifacts={artifacts} />
       <div className="grid gap-4 md:grid-cols-4">
         <Card><div className="text-sm text-muted-foreground">Status</div><div className="mt-2"><StatusBadge status={project.status} /></div></Card>
         <Card><div className="text-sm text-muted-foreground">Events</div><div className="mt-2 text-2xl font-semibold">{events.length}</div></Card>
@@ -328,15 +328,21 @@ function Overview({
 function LiveProgressExplanation({
   steps,
   latestFailure,
+  events,
+  artifacts,
 }: {
   steps: ReturnType<typeof derivePipelineSteps>;
   latestFailure: ReturnType<typeof getLatestFailure>;
+  events: AgentEvent[];
+  artifacts: Artifact[];
 }) {
   const current = getCurrentStep(steps);
   const copy = currentStepCopy(current?.id ?? "waiting", Boolean(latestFailure));
+  const latestArtifact = artifacts[0];
+  const logText = latestFailure?.detail || events.slice(-20).map((event) => `[${event.created_at}] ${event.step}: ${event.message}${event.stderr ? `\n${event.stderr}` : ""}`).join("\n");
   return (
     <Card>
-      <div className="grid gap-4 lg:grid-cols-3">
+      <div className="grid gap-4 lg:grid-cols-4">
         <div>
           <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Bước hiện tại</div>
           <div className="mt-1 font-semibold">{current?.label ?? "Đang chờ worker"}</div>
@@ -346,9 +352,18 @@ function LiveProgressExplanation({
           <p className="mt-1 text-sm text-muted-foreground">{copy.doing}</p>
         </div>
         <div>
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Vì sao cần bước này?</div>
+          <p className="mt-1 text-sm text-muted-foreground">{copy.why}</p>
+        </div>
+        <div>
           <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Nếu lỗi thì sao?</div>
           <p className="mt-1 text-sm text-muted-foreground">{copy.failure}</p>
         </div>
+      </div>
+      <div className="mt-4 flex flex-wrap gap-2">
+        {logText ? <CopyButton value={logText} label="Copy log" /> : null}
+        {latestArtifact ? <CopyButton value={latestArtifact.path} label="Copy artifact path" /> : null}
+        <Link className="inline-flex min-h-10 items-center rounded-md border border-border bg-card px-4 py-2 text-sm font-medium hover:bg-muted" href="/artifacts">Mở artifact</Link>
       </div>
     </Card>
   );
@@ -358,49 +373,60 @@ function currentStepCopy(stepId: string, hasFailure: boolean) {
   if (hasFailure) {
     return {
       doing: "Hệ thống đã thấy lỗi gần nhất và giữ lại log để bạn copy hoặc để Autopilot dùng trong vòng sửa tiếp theo.",
+      why: "Log lỗi là bằng chứng để Code Agent sửa đúng lỗi thật thay vì đoán.",
       failure: "Nếu còn trong giới hạn retry, Code Agent sẽ sửa. Nếu vượt giới hạn hoặc rủi ro policy cao, dự án chuyển sang NEEDS_HUMAN_REVIEW.",
     };
   }
-  const copy: Record<string, { doing: string; failure: string }> = {
+  const copy: Record<string, { doing: string; why: string; failure: string }> = {
     brief: {
       doing: "Đang đọc brief, config snapshot, run profile và skill được chọn.",
+      why: "Bước này khóa cấu hình runtime để worker dùng đúng provider, model, plugin và learning rules.",
       failure: "Nếu thiếu cấu hình quan trọng, hệ thống ghi event rõ ràng để bạn sửa ở Config Studio.",
     },
     research: {
       doing: "Đang tạo finding/candidate từ deterministic provider hoặc web allowlist.",
+      why: "Research giúp chọn hướng app có vấn đề người dùng rõ hơn thay vì tạo scaffold chung chung.",
       failure: "Nếu web không sẵn sàng, ForgeTrend fallback deterministic thay vì dừng toàn bộ luồng.",
     },
     prd: {
       doing: "Đang biến candidate thành PRD và phạm vi MVP cụ thể.",
+      why: "PRD là hợp đồng sản phẩm cho code agent, QA và quality gate.",
       failure: "Nếu PRD quá generic, learning rule sẽ ưu tiên blueprint sâu hơn ở lần sau.",
     },
     ux: {
       doing: "Đang tạo screen flow, trạng thái trống/lỗi/thành công và hướng thiết kế.",
+      why: "UX flow giúp app đầu ra có hành trình thật, không chỉ vài màn hình rời rạc.",
       failure: "Nếu thiếu flow, quality gate sẽ yêu cầu làm sâu core feature.",
     },
     code: {
       doing: "Đang tạo source Flutter, blueprint, store assets và có thể gọi Codex nếu đã cấu hình.",
+      why: "Đây là bước biến brief thành artifact có thể build/test trên máy local.",
       failure: "Nếu Codex lỗi hoặc chưa auth, worker giữ scaffold deterministic và tiếp tục QA khi có thể.",
     },
     qa: {
       doing: "Đang chạy Flutter pub get, analyze, test và debug APK.",
+      why: "QA chứng minh app không chỉ được tạo file mà còn build/test được.",
       failure: "Lỗi QA sẽ được đưa lại cho Code Agent để sửa trong số vòng retry cho phép.",
     },
     policy: {
       doing: "Đang kiểm tra tên app, permission, privacy, billing disclosure và rủi ro copycat.",
+      why: "Policy gate bảo vệ tài khoản store và giữ production publish trong vòng review của con người.",
       failure: "Lỗi policy nghiêm trọng sẽ chặn release candidate và yêu cầu con người review.",
     },
     quality: {
       doing: "Đang chấm độ cụ thể của sản phẩm, localization, feature depth và store readiness.",
+      why: "Quality gate chặn app mỏng/generic trước khi bạn mất thời gian test nội bộ.",
       failure: "Nếu app còn yếu hoặc generic, Autopilot thử làm sâu luồng chính trước khi chặn.",
     },
     artifacts: {
       doing: "Đang ghi APK/source/report/store assets/gói test nội bộ để bạn review.",
+      why: "Artifact là gói bàn giao để tester hoặc người duyệt có đủ ngữ cảnh.",
       failure: "Nếu thiếu artifact quan trọng, dự án chưa được xem là release candidate.",
     },
   };
   return copy[stepId] ?? {
     doing: "Đang chờ bước tiếp theo từ worker hoặc queue.",
+    why: "Trạng thái này giúp bạn biết nên chờ worker hay kiểm tra cấu hình.",
     failure: "Nếu không có tiến triển, kiểm tra worker, doctor và log pipeline.",
   };
 }

@@ -40,19 +40,23 @@ test("factory brief can be created and opened from dashboard", async ({ page }, 
     expect(health.status).toBe("ok");
 
     await page.goto("/factory");
-    await expect(page.getByRole("heading", { name: "Factory" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Factory", exact: true })).toBeVisible();
 
     const prompt = `HSK local-first learning app UI E2E ${new Date().toISOString()}`;
-    await page.getByLabel("Instruction").fill(prompt);
-    await page.getByLabel("Mode").selectOption("auto_trend");
-    await page.getByLabel("Category").fill("Education");
-    await page.getByLabel("Monetization").selectOption("subscription");
+    await page.locator('textarea[name="raw_prompt"]').fill(prompt);
+    await page.locator('select[name="mode"]').selectOption("auto_trend");
+    await page.locator('input[name="target_category"]').fill("Education");
+    await page.locator('select[name="monetization_mode"]').selectOption("subscription");
     await page.locator('input[name="iap_enabled"]').check();
-    await page.getByLabel("Backend").selectOption("none");
-    await page.getByRole("button", { name: /Create brief/i }).click();
+    await page.locator('select[name="backend_mode"]').selectOption("none");
+    await Promise.all([
+      page.waitForResponse((response) => response.url().endsWith("/factory-briefs") && response.request().method() === "POST"),
+      page.locator("form").first().evaluate((form) => (form as HTMLFormElement).requestSubmit()),
+    ]);
 
-    await expect(page.getByText(prompt)).toBeVisible({ timeout: 30_000 });
-    await page.getByText(prompt, { exact: true }).click();
+    const briefQueueCard = page.getByRole("button").filter({ hasText: prompt }).first();
+    await expect(briefQueueCard).toBeVisible({ timeout: 30_000 });
+    await briefQueueCard.click();
     await page.getByRole("button", { name: /^Start$/ }).click();
 
     const brief = await waitForApi<any>("brief appears", async () => {
@@ -82,11 +86,11 @@ test("factory brief can be created and opened from dashboard", async ({ page }, 
     });
 
     await page.reload();
-    await page.getByText(prompt, { exact: true }).click();
-    await expect(page.getByText("brief_queued")).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByText("research_started")).toBeVisible();
-    await expect(page.getByText("candidates_created")).toBeVisible();
-    await expect(page.getByText("project_created")).toBeVisible();
+    await page.getByRole("button").filter({ hasText: prompt }).first().click();
+    await expect(page.getByText("brief_queued").first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText("research_started").first()).toBeVisible();
+    await expect(page.getByText("candidates_created").first()).toBeVisible();
+    await expect(page.getByText("project_created").first()).toBeVisible();
     await expect(page.getByText("pipeline_queued").first()).toBeVisible();
 
     await page.getByRole("link", { name: /Open project/i }).click();
@@ -101,7 +105,7 @@ test("factory brief can be created and opened from dashboard", async ({ page }, 
       return { ok: artifacts.length > 0, value: artifacts, detail: `${artifacts.length} artifact(s)` };
     });
     await page.getByRole("button", { name: "Artifacts" }).click();
-    await expect(page.getByText(/prd\.md|Flutter app|factory_run_report\.md|app-debug\.apk/)).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("cell", { name: "prd.md", exact: true })).toBeVisible({ timeout: 30_000 });
   } catch (error) {
     await testInfo.attach("browser-console.log", {
       body: consoleMessages.join("\n") || "No browser console output captured.",

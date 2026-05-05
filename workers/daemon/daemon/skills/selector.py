@@ -28,6 +28,7 @@ def select_skills(
     category = str((brief or {}).get("target_category") or "").lower()
     prompt = str((brief or {}).get("raw_prompt") or "").lower()
     failures = " ".join([previous_failure or "", " ".join(quality_issues or [])]).lower()
+    learning_rules = runtime_config.get("applied_learning_rules") or []
 
     add("trend_research", "Score opportunities by demand, pain, feasibility, originality, and policy risk.")
     add("flutter_store_ready", "Generate a complete app candidate instead of a generic scaffold.")
@@ -38,16 +39,25 @@ def select_skills(
         add("vietnamese_ux_writer", "Vietnamese-first target needs natural domain-specific UX copy.")
     if monetization in {"iap", "subscription", "freemium", "hybrid"}:
         add("iap_subscription_placeholder", "Monetization requires simulated billing disclosure and human review.")
+    if "subscription" in prompt or "in-app purchase" in prompt or "iap" in prompt:
+        add("iap_subscription_placeholder", "Prompt mentions subscription/IAP; billing must stay simulated until review.")
     if category in {"education", "health", "finance"} or "policy" in failures:
         add("google_play_policy", "Higher policy sensitivity requires explicit policy gate context.")
     if "generic" in failures or "placeholder" in failures or "weak" in failures:
         add("flutter_store_ready", "Previous issue indicates generic output; deepen core flow.")
+        add("product_depth_enhancer", "Previous issue indicates generic output; deepen product-specific interaction.")
         add("code_review", "Review generated code for incomplete flows and regressions.")
     if "store" in failures or monetization:
         add("app_store_readiness", "Store readiness and tester package need explicit blockers.")
         add("aso_listing", "Create safe listing drafts for human review.")
     if "privacy" in failures or category in {"health", "finance", "education"}:
         add("privacy_policy", "Sensitive categories need clearer privacy posture.")
+    for rule in learning_rules:
+        action = rule.get("action_json") or {}
+        for slug in action.get("selected_skills") or []:
+            add(str(slug), f"Learning rule {rule.get('rule_key')} requested this skill.")
+        if action.get("require_interactive_core_flow") or action.get("blueprint_depth") == "deep":
+            add("product_depth_enhancer", f"Learning rule {rule.get('rule_key')} requires deeper core flow.")
 
     try:
         token_budget = int(float((brief or {}).get("max_cost_usd") or 0))

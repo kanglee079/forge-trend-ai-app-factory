@@ -1,3 +1,5 @@
+import { spawnSync } from "node:child_process";
+
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 
 const checks = [];
@@ -22,6 +24,14 @@ async function fetchJson(path) {
 await check("API health", async () => {
   const body = await fetchJson("/health");
   return body.status;
+});
+
+await check("Schema drift", async () => {
+  const result = spawnSync(process.platform === "win32" ? "pnpm.cmd" : "pnpm", ["db:schema-check"], { encoding: "utf8" });
+  if (result.status !== 0) {
+    throw new Error((result.stdout || result.stderr || "schema drift check failed").slice(-1200));
+  }
+  return "models match migrated DB";
 });
 
 await check("Doctor endpoint", async () => {

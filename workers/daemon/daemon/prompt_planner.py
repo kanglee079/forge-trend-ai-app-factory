@@ -53,4 +53,8 @@ def skill_prompt_header(selected_skills: list[dict[str, Any]]) -> str:
     lines = ["Selected skills:"]
     for skill in selected_skills:
         lines.append(f"- {skill.get('slug')}: {skill.get('reason') or skill.get('category')}")
+        for fragment in (skill.get("prompt_fragments") or [])[:2]:
+            template = " ".join(str(fragment.get("prompt_template") or "").split())
+            if template:
+                lines.append(f"  Prompt fragment ({fragment.get('name')}): {template[:700]}")
     return "\n".join(lines)
